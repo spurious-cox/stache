@@ -1,0 +1,798 @@
+#!/usr/bin/env python3
+"""Headless checks for Stache - v1.0.0
+
+    ./venv/bin/python test_stache.py
+
+Exercises the store against a scratch database and renders the picker panel
+to test_render.png with cacheDisplayInRect_toBitmapImageRep_, so the layout
+can be looked at without leaving a GUI instance of the app running and
+without any screen-recording permission.
+"""
+
+import os
+import shutil
+import sys
+import tempfile
+import time
+from datetime import datetime
+
+SCRATCH = tempfile.mkdtemp(prefix="stache-test-")
+os.environ["HOME"] = os.environ.get("HOME")          # unchanged; see below
+
+import stache
+
+# Point every path at the scratch directory before anything creates files.
+stache.SUPPORT_DIR = SCRATCH
+stache.BLOB_DIR = os.path.join(SCRATCH, "blobs")
+stache.THUMB_DIR = os.path.join(SCRATCH, "thumbs")
+stache.DB_PATH = os.path.join(SCRATCH, "stache.sqlite3")
+
+from AppKit import (NSApplication, NSBitmapImageFileTypePNG, NSColor,
+                    NSGraphicsContext, NSMakeRect)
+
+FAILURES = []
+
+
+def _mark_dirty(view):
+    view.setNeedsDisplay_(True)
+    for sub in view.subviews():
+        _mark_dirty(sub)
+
+
+def check(label, condition, detail=""):
+    if condition:
+        print("  ok    %s" % label)
+    else:
+        print("  FAIL  %s %s" % (label, detail))
+        FAILURES.append(label)
+
+
+def sample_png(width, height, rgb):
+    """A solid PNG built through AppKit, the same path the app uses."""
+    from AppKit import NSBitmapImageRep, NSBezierPath, NSDeviceRGBColorSpace
+    rep = NSBitmapImageRep.alloc().\
+        initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel_(
+            None, width, height, 8, 4, True, False, NSDeviceRGBColorSpace, 0, 0)
+    ctx = NSGraphicsContext.graphicsContextWithBitmapImageRep_(rep)
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.setCurrentContext_(ctx)
+    NSColor.colorWithCalibratedRed_green_blue_alpha_(
+        rgb[0], rgb[1], rgb[2], 1.0).setFill()
+    NSBezierPath.fillRect_(NSMakeRect(0, 0, width, height))
+    NSColor.whiteColor().setFill()
+    NSBezierPath.fillRect_(NSMakeRect(width * 0.2, height * 0.2,
+                                      width * 0.6, height * 0.25))
+    NSGraphicsContext.restoreGraphicsState()
+    return bytes(rep.representationUsingType_properties_(
+        NSBitmapImageFileTypePNG, {}))
+
+
+def test_store():
+    print("store")
+    store = stache.Store(stache.DB_PATH)
+
+    first = store.add_text("hello clipboard", app="TextEdit")
+    check("text insert", first is not None)
+    check("count after one insert", store.count() == 1)
+
+    again = store.add_text("hello clipboard", app="TextEdit")
+    check("identical text is deduped, not duplicated",
+          again is None and store.count() == 1)
+
+    store.add_text("a second, different clipping", app="Safari")
+    items = store.items()
+    check("newest first", items[0].body == "a second, different clipping")
+
+    png = sample_png(640, 400, (0.2, 0.45, 0.85))
+    img_id = store.add_image(png, 640, 400, app="Preview", alt_text=None)
+    check("image insert", img_id is not None)
+    item = store.items(kind="image")[0]
+    check("image blob written on disk", os.path.exists(item.blob_path))
+    check("thumbnail written on disk",
+          item.thumb_path and os.path.exists(item.thumb_path))
+    check("image dimensions recorded",
+          item.width == 640 and item.height == 400)
+    check("image detail line", "640 x 400" in item.detail(), item.detail())
+
+    check("kind filter", len(store.items(kind="text")) == 2)
+    check("search hits the body",
+          len(store.items(query="second")) == 1)
+    check("search hits the source app",
+          len(store.items(query="Safari")) == 1)
+
+    store.set_pinned(items[0].id, True)
+    check("pinned sorts first", store.items()[0].id == items[0].id)
+
+    # Retention: a cap of one keeps the pinned item plus one other.
+    store.prune(max_items=1, max_days=0)
+    check("prune to one keeps the pinned item too", store.count() == 2,
+          "count=%d" % store.count())
+
+    orphans = [n for n in os.listdir(stache.BLOB_DIR)]
+    check("pruned image files are deleted with their rows",
+          len(orphans) <= 1, orphans)
+
+    # Age cap — counted from the last USE, so both have to be old.
+    stale = time.time() - 40 * 86400
+    store.db.execute("UPDATE items SET created = ?, used = ?, pinned = 0",
+                     (stale, stale))
+    store.db.commit()
+    store.prune(max_items=0, max_days=30)
+    check("age cap empties an old history", store.count() == 0)
+    check("blob directory emptied with it",
+          os.listdir(stache.BLOB_DIR) == [], os.listdir(stache.BLOB_DIR))
+    store.close()
+
+
+def test_hotkey_labels():
+    print("hotkey")
+    check("default chord reads as Control-Option-Command-Space",
+          stache.hotkey_label(stache.DEFAULT_HOTKEY_CODE,
+                             stache.DEFAULT_HOTKEY_MODS) == "⌃⌥⌘Space",
+          stache.hotkey_label(stache.DEFAULT_HOTKEY_CODE,
+                             stache.DEFAULT_HOTKEY_MODS))
+    check("shift-command-V reads back",
+          stache.hotkey_label(9, stache.shiftKey | stache.cmdKey) == "⇧⌘V")
+    check("Carbon framework loaded and exports the API",
+          hasattr(stache._carbon, "RegisterEventHotKey"))
+
+
+def test_menu():
+    print("menu bar list")
+    store = stache.Store(stache.DB_PATH)
+    store.add_text("   a clipping   with  collapsed\n whitespace  ", app="Notes")
+    store.add_text("x" * 200, app="Notes")
+    store.add_image(sample_png(320, 200, (0.4, 0.4, 0.4)), 320, 200,
+                    app="Preview")
+
+    text_items = store.items(kind="text")
+    long_title = stache._menu_title(
+        [i for i in text_items if len(i.body) == 200][0])
+    check("a long clipping is truncated for the menu",
+          len(long_title) == stache.MENU_TITLE_CHARS and
+          long_title.endswith("…"), long_title)
+    collapsed = stache._menu_title(
+        [i for i in text_items if "collapsed" in i.body][0])
+    check("newlines and runs of spaces are collapsed",
+          collapsed == "a clipping with collapsed whitespace", collapsed)
+
+    image = store.items(kind="image")[0]
+    check("an image gets its dimensions as a title",
+          stache._menu_title(image) == "Image  320 × 200",
+          stache._menu_title(image))
+    thumb = stache._menu_thumb(image)
+    check("an image gets a postage-stamp beside it",
+          thumb is not None and thumb.size().height <= 18,
+          None if thumb is None else str(thumb.size()))
+    check("a text clipping gets no image",
+          stache._menu_thumb(text_items[0]) is None)
+    check("the menu asks for at most ten",
+          len(store.items(limit=stache.RECENT_IN_MENU)) <= 10)
+    store.clear(keep_pinned=False)
+    store.close()
+
+
+def test_search_dates():
+    """Dates in the search box."""
+    print("date search")
+    import time as _time
+    from datetime import datetime, timedelta
+    store = stache.Store(stache.DB_PATH)
+    store.clear(keep_pinned=False)
+    store.add_text("a note from right now", app="Notes")
+    # Backdate one clipping by three days.
+    old_id = store.add_text("an older note", app="Notes")
+    then = _time.time() - 3 * 86400
+    store.db.execute("UPDATE items SET created = ?, stamp = ? WHERE id = ?",
+                     (then, stache.time_stamp(then), old_id))
+    store.db.commit()
+
+    now = datetime.now()
+    check("the month name finds today's clipping",
+          len(store.items(query=now.strftime("%b"))) >= 1,
+          now.strftime("%b"))
+    check("the full month name works too",
+          len(store.items(query=now.strftime("%B"))) >= 1)
+    check("an ISO date works",
+          len(store.items(query=now.strftime("%Y-%m-%d"))) == 1,
+          now.strftime("%Y-%m-%d"))
+    check("a bare year works", len(store.items(query=now.strftime("%Y"))) == 2)
+    check("the weekday name works",
+          len(store.items(query=now.strftime("%A"))) >= 1)
+    check("'today' excludes the three-day-old clipping",
+          len(store.items(query="today")) == 1)
+    check("'yesterday' matches neither", len(store.items(query="yesterday")) == 0)
+    check("'this week' is a range, not a string",
+          len(store.items(query="this week")) >= 1)
+
+    # And an ordinary word search must not be hijacked by the date machinery.
+    check("a plain word still searches the text",
+          len(store.items(query="older")) == 1)
+    check("a word that is not a date matches nothing spurious",
+          len(store.items(query="zzzznotpresent")) == 0)
+    check("a short non-date word is not treated as a date",
+          stache.date_query("report") is None)
+    check("a month prefix IS treated as a date",
+          stache.date_query("aug") == ("stamp",))
+    check("anything with a digit is treated as a date",
+          stache.date_query("8/28") == ("stamp",))
+    check("'today' resolves to a time range",
+          stache.date_query("today")[0] == "range")
+    store.clear(keep_pinned=False)
+    store.close()
+
+
+def test_prefs_layout():
+    """Every control inside the panel, nothing overlapping."""
+    print("preferences layout")
+    from AppKit import NSApplication
+    NSApplication.sharedApplication()
+
+    class Fake(object):
+        store = None
+
+    prefs = stache.PrefsController.alloc().initWithApp_(Fake())
+    prefs.refresh()
+    bounds = prefs.panel.contentView().bounds()
+    strays = []
+    for view in prefs.panel.contentView().subviews():
+        f = view.frame()
+        if (f.origin.x < 0 or f.origin.y < 0 or
+                f.origin.x + f.size.width > bounds.size.width + 0.5 or
+                f.origin.y + f.size.height > bounds.size.height + 0.5):
+            strays.append("%s at %.0f,%.0f %.0fx%.0f"
+                          % (view.className(), f.origin.x, f.origin.y,
+                             f.size.width, f.size.height))
+    check("every control is inside the panel", not strays, "; ".join(strays))
+
+    controls = [("card size", prefs.card_menu), ("layout", prefs.layout_menu),
+                ("strip width", prefs.strip_pct), ("hotkey", prefs.hotkey_button),
+                ("max items", prefs.max_items), ("max days", prefs.max_days),
+                ("capture images", prefs.capture_images),
+                        ("login item", prefs.login_item)]
+    tops = sorted((c.frame().origin.y, name) for name, c in controls)
+    # One row fewer since 1.11.0: the confirm-pinned switch went when a
+    # pinned clipping stopped being deletable at all.
+    check("every row is at its own height",
+          len({round(y) for y, _ in tops}) == len(controls),
+          str([(n, round(y)) for y, n in tops]))
+    return prefs
+
+
+def test_capture_vs_use():
+    """Recalling a clipping must not rewrite when it was captured."""
+    print("capture time vs last use")
+    import time as _time
+    store = stache.Store(stache.DB_PATH)
+    store.clear(keep_pinned=False)
+    first = store.add_text("older clipping", app="Notes")
+    _time.sleep(0.01)
+    store.add_text("newer clipping", app="Notes")
+
+    original = store.get(first).created
+    check("a fresh clipping starts with used == created",
+          abs(store.get(first).used - original) < 0.001)
+    check("it has no recall label yet", store.get(first).used_label() == "")
+    check("the newer clipping sorts first",
+          store.items()[0].body == "newer clipping")
+
+    _time.sleep(0.01)
+    store.touch(first)
+    again = store.get(first)
+    check("recalling does NOT move the capture time",
+          again.created == original,
+          "%r became %r" % (original, again.created))
+    check("recalling records a later use", again.used > again.created)
+    check("and brings the clipping to the front",
+          store.items()[0].id == first,
+          str([i.body for i in store.items()]))
+    # used_label() suppresses anything within a second of the capture, so a
+    # freshly stored clipping does not claim to have been recalled. Set the
+    # recall a clear minute later to exercise the label itself.
+    store.db.execute("UPDATE items SET used = created + 60 WHERE id = ?",
+                     (first,))
+    store.db.commit()
+    again = store.get(first)
+    label = again.used_label()
+    check("the card gets a recall label", label.startswith("used "), label)
+    check("a clipping never recalled shows no label",
+          store.get(store.items()[-1].id).used_label() == "",
+          store.get(store.items()[-1].id).used_label())
+    check("the card still reports the original capture time",
+          again.when() ==
+          datetime.fromtimestamp(original).strftime("%b %-d, %-I:%M %p"))
+
+    # Copying the same content again is a use, not a new capture.
+    duplicate = store.add_text("older clipping", app="Notes")
+    check("a duplicate copy is deduped", duplicate is None)
+    check("and still does not move the capture time",
+          store.get(first).created == original)
+
+    store.clear(keep_pinned=False)
+    store.close()
+
+
+def test_expiry():
+    """Using a clipping keeps it alive, and it warns before it goes."""
+    print("age limit and its warning")
+    store = stache.Store(stache.DB_PATH)
+    store.clear(keep_pinned=False)
+    old_id = store.add_text("captured long ago, used recently", app="Notes")
+    idle_id = store.add_text("captured long ago, never touched", app="Notes")
+    soon_id = store.add_text("nearly out of time", app="Notes")
+    long_ago = time.time() - 40 * 86400
+
+    # Captured 40 days ago; recalled a moment ago.
+    store.db.execute("UPDATE items SET created = ?, used = ? WHERE id = ?",
+                     (long_ago, time.time(), old_id))
+    # Captured 40 days ago and never touched since.
+    store.db.execute("UPDATE items SET created = ?, used = ? WHERE id = ?",
+                     (long_ago, long_ago, idle_id))
+    # Inside the last tenth of a 30-day life: 2 days to go.
+    near = time.time() - 28 * 86400
+    store.db.execute("UPDATE items SET created = ?, used = ? WHERE id = ?",
+                     (near, near, soon_id))
+    store.db.commit()
+
+    check("a clipping used recently survives the age limit",
+          store.get(old_id).days_left(30) > 29,
+          str(store.get(old_id).days_left(30)))
+    check("an untouched clipping of the same age is past it",
+          store.get(idle_id).days_left(30) < 0)
+
+    check("the warning threshold is a tenth of the limit, min one day",
+          stache.expiry_warning_days(30) == 3.0
+          and stache.expiry_warning_days(3) == 1.0)
+    check("a healthy clipping says nothing",
+          store.get(old_id).expiry_label(30) == "",
+          store.get(old_id).expiry_label(30))
+    label = store.get(soon_id).expiry_label(30)
+    check("one nearing the limit warns", label.endswith("left"), label)
+    check("and says how long", label.startswith("2 day"), label)
+    check("one already past says so",
+          store.get(idle_id).expiry_label(30) == "expiring",
+          store.get(idle_id).expiry_label(30))
+    store.set_pinned(soon_id, True)
+    check("a pinned clipping never warns — it never expires",
+          store.get(soon_id).expiry_label(30) == "")
+    store.set_pinned(soon_id, False)
+    check("no age limit means no warning",
+          store.get(idle_id).expiry_label(0) == "")
+
+    store.prune(max_items=0, max_days=30)
+    survivors = [i.id for i in store.items()]
+    check("pruning keeps the recently used one", old_id in survivors)
+    check("pruning takes the idle one", idle_id not in survivors)
+    store.clear(keep_pinned=False)
+    store.close()
+
+
+def test_dock():
+    """Every Dock arrangement, without a Dock to point it at."""
+    print("dock clearance")
+    from AppKit import NSMakeRect
+    screen = NSMakeRect(0, 0, 2560, 1409)          # Tim's display
+    tim = {"autohide": 1, "orientation": "bottom", "tilesize": 45,
+           "magnification": 1, "largesize": 72}
+
+    check("a Dock that is showing needs no reserve — visibleFrame has it",
+          stache.dock_reserve({"autohide": 0, "orientation": "bottom",
+                               "tilesize": 45}) == (0.0, 0.0, 0.0))
+    check("no Dock settings at all is handled",
+          stache.dock_reserve(None) == (0.0, 0.0, 0.0))
+
+    left, bottom, right = stache.dock_reserve(tim)
+    check("hidden bottom Dock reserves height, not width",
+          left == 0 and right == 0 and bottom > 0,
+          "got %s" % (stache.dock_reserve(tim),))
+    check("magnification is what sets the depth (largesize 72, not tile 45)",
+          bottom == 72 + stache.DOCK_CHROME, "bottom=%s" % bottom)
+    check("without magnification the tile size sets it",
+          stache.dock_reserve(dict(tim, magnification=0))[1]
+          == 45 + stache.DOCK_CHROME)
+
+    for orientation, expected in (("left", (96.0, 0.0, 0.0)),
+                                  ("right", (0.0, 0.0, 96.0)),
+                                  ("bottom", (0.0, 96.0, 0.0))):
+        got = stache.dock_reserve(dict(tim, orientation=orientation))
+        check("%s Dock reserves %s" % (orientation, expected), got == expected,
+              "got %s" % (got,))
+
+    # And the frame that comes out of each arrangement.
+    edge = stache.STRIP_EDGE
+    for orientation in ("bottom", "left", "right", "none"):
+        settings = dict(tim, orientation=orientation) if orientation != "none" \
+            else dict(tim, autohide=0)
+        reserve = stache.dock_reserve(settings)
+        f = stache.strip_frame(screen, reserve, 60)
+        l, b, r = reserve
+        check("%s: strip clears the Dock on that edge" % orientation,
+              f.origin.x >= l + edge - 0.01 and f.origin.y >= b + edge - 0.01,
+              "frame %.0f,%.0f" % (f.origin.x, f.origin.y))
+        check("%s: strip stays inside the screen" % orientation,
+              f.origin.x + f.size.width <= 2560 - r + 0.01,
+              "right edge %.0f, screen 2560 - %.0f" % (f.origin.x + f.size.width, r))
+        check("%s: strip is 60%% of the usable width" % orientation,
+              abs(f.size.width - (2560 - l - r) * 0.6) < 1.0,
+              "width %.0f" % f.size.width)
+
+    narrow = stache.strip_frame(NSMakeRect(0, 0, 900, 800), (0, 0, 0), 100)
+    check("a full-width strip still leaves its edge margins",
+          narrow.size.width <= 900 - 2 * edge + 0.01,
+          "width %.0f" % narrow.size.width)
+    tiny = stache.strip_frame(screen, (0, 0, 0), 1)
+    check("an absurdly small percentage is clamped to something usable",
+          tiny.size.width >= stache.CARD_W,
+          "width %.0f" % tiny.size.width)
+
+
+class FakeApp(object):
+    """Stands in for StacheApp: the picker only asks it to copy and to
+    reach the store, and the test must not touch the real pasteboard."""
+
+    def __init__(self, store):
+        self.store = store
+        self.copied = []
+
+    def copyToPasteboard_(self, item):
+        self.copied.append(item.id)
+
+    def copyStringToPasteboard_(self, text):
+        self.copied.append(text)
+
+    def showHelp(self):
+        pass
+
+
+def test_render():
+    print("render")
+    NSApplication.sharedApplication()
+    store = stache.Store(stache.DB_PATH)
+    store.add_text("The quick brown fox jumps over the lazy dog. "
+                   "Clipboard history keeps the whole thing, not a summary, "
+                   "so pasting it back gives you every character.",
+                   app="Safari")
+    store.add_text("git log --oneline --graph --decorate --all", app="Terminal")
+    for i, rgb in enumerate([(0.85, 0.3, 0.3), (0.25, 0.6, 0.4),
+                             (0.3, 0.4, 0.8)]):
+        store.add_image(sample_png(800 + i, 500, rgb), 800 + i, 500,
+                        app="Preview")
+    store.add_text("mccoytest@cox.net", app="Mail")
+
+    stache.apply_card_size()
+    check("card size preference drives the geometry",
+          (stache.CARD_W, stache.CARD_H) == stache.CARD_SIZES["large"],
+          "%dx%d" % (stache.CARD_W, stache.CARD_H))
+    check("the strip is tall enough for the card it holds",
+          stache.STRIP_CONTENT_H >= stache.CARD_H + stache.HEADER_H,
+          "content %d, card %d" % (stache.STRIP_CONTENT_H, stache.CARD_H))
+    check("the window is taller than its content by the title bar",
+          stache.STRIP_H > stache.STRIP_CONTENT_H,
+          "window %d, content %d" % (stache.STRIP_H, stache.STRIP_CONTENT_H))
+    check("the thumbnail gets the card minus its two caption lines",
+          stache.THUMB_BOX_H ==
+          stache.CARD_H - 2 * stache.CARD_PAD - stache.DATE_H - stache.META_H - 6)
+    check("stored thumbnails out-resolve the largest card on retina",
+          stache.THUMB_W >= (stache.CARD_SIZES["large"][0] - 2 * stache.CARD_PAD) * 2,
+          "%d vs %d" % (stache.THUMB_W,
+                        (stache.CARD_SIZES["large"][0] - 2 * stache.CARD_PAD) * 2))
+
+    picker = stache.PickerController.alloc().initWithApp_(FakeApp(store))
+    # The strip is sized like it would be above the Dock: a share of a
+    # 2560-wide screen, left-anchored.
+    from AppKit import NSMakeRect
+    if picker.isStrip():
+        picker.panel.setFrame_display_(
+            NSMakeRect(8, 8, 2560 * 0.6,
+                       stache.STRIP_CONTENT_H + picker._chrome_(picker.panel)),
+            False)
+        content = picker.panel.contentView().bounds().size.height
+        check("the strip's content is tall enough for a whole card",
+              content >= stache.STRIP_CONTENT_H - 0.5,
+              "content %.0f, needs %d" % (content, stache.STRIP_CONTENT_H))
+    picker.reload()
+    picker.grid.relayout()
+    check("strip layout is one row",
+          (not picker.isStrip()) or picker.grid.columns() == len(picker.grid.items()),
+          "columns=%d items=%d" % (picker.grid.columns(),
+                                   len(picker.grid.items())))
+    check("strip scrolls sideways, not down",
+          (not picker.isStrip()) or
+          (picker.scroll.hasHorizontalScroller() and
+           not picker.scroll.hasVerticalScroller()))
+
+    # Both appearances, because every colour in the panel is a semantic
+    # NSColor and the only way to know they resolve sensibly in dark mode is
+    # to draw it in dark mode.
+    from AppKit import NSAppearance
+    for suffix, name in (("", "NSAppearanceNameAqua"),
+                         ("_dark", "NSAppearanceNameDarkAqua")):
+        picker.panel.setAppearance_(NSAppearance.appearanceNamed_(name))
+        view = picker.panel.contentView()
+        # An appearance change alone does not redraw already-cached subviews.
+        _mark_dirty(view)
+        view.displayIfNeeded()
+        rect = view.bounds()
+        rep = view.bitmapImageRepForCachingDisplayInRect_(rect)
+        view.cacheDisplayInRect_toBitmapImageRep_(rect, rep)
+        data = rep.representationUsingType_properties_(
+            NSBitmapImageFileTypePNG, {})
+        out = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "test_render%s.png" % suffix)
+        check("panel rendered to %s" % os.path.basename(out),
+              bool(data and data.writeToFile_atomically_(out, True)))
+    check("grid holds every clipping", len(picker.grid.items()) == 6,
+          str(len(picker.grid.items())))
+    check("status line reports the hotkey",
+          "Space" in str(picker.status.stringValue()),
+          str(picker.status.stringValue()))
+    image_item = [i for i in picker.grid.items() if i.kind == "image"][0]
+    menu = picker.menuForItem_(image_item)
+    titles = [str(menu.itemAtIndex_(i).title())
+              for i in range(menu.numberOfItems())]
+    opener = stache._default_app_name(image_item.blob_path)
+    check("the open item names the application that will really open it",
+          bool(opener) and ("Open in %s" % opener) in titles,
+          "opener=%s titles=%s" % (opener, titles))
+    check("Preview keeps its own item when it is not the default",
+          opener == "Preview" or "Open in Preview" in titles, str(titles))
+
+    with_index = titles.index("Open With")
+    submenu = menu.itemAtIndex_(with_index).submenu()
+    apps = [str(submenu.itemAtIndex_(i).title())
+            for i in range(submenu.numberOfItems())]
+    check("Open With lists real applications", len(apps) > 1, str(apps))
+    check("Open With ends with Other…", apps[-1] == "Other…", str(apps))
+    check("the default application is among them",
+          opener in apps, "%s not in %s" % (opener, apps))
+
+    text_item = [i for i in picker.grid.items() if i.kind == "text"][0]
+    text_path = stache.openable_path(text_item)
+    check("a text clipping is written out so anything can open it",
+          text_path and os.path.exists(text_path) and text_path.endswith(".txt"),
+          str(text_path))
+    check("the written file holds the clipping",
+          open(text_path, encoding="utf-8").read() == (text_item.body or ""))
+    text_menu = picker.menuForItem_(text_item)
+    text_titles = [str(text_menu.itemAtIndex_(i).title())
+                   for i in range(text_menu.numberOfItems())]
+    check("text clippings get Open With too", "Open With" in text_titles,
+          str(text_titles))
+
+    # The help window, rendered like the picker so it can be looked at.
+    from AppKit import NSAppearance, NSBitmapImageFileTypePNG as _PNG
+    helper = stache.HelpController.alloc().initWithApp_(FakeApp(store))
+    body = str(helper._body().string())
+    check("help explains the name", "stash" in body.lower() and
+          "sound identical" in body.lower(), body[:120])
+    check("help names the real hotkey",
+          stache.hotkey_label(stache.DEFAULT_HOTKEY_CODE,
+                              stache.DEFAULT_HOTKEY_MODS) in body)
+    for heading, _rows in stache.HELP_SECTIONS:
+        check("help covers %r" % heading, heading in body)
+    helper.panel.setAppearance_(
+        NSAppearance.appearanceNamed_("NSAppearanceNameDarkAqua"))
+    hv = helper.panel.contentView()
+    _mark_dirty(hv)
+    hv.displayIfNeeded()
+    hrep = hv.bitmapImageRepForCachingDisplayInRect_(hv.bounds())
+    hv.cacheDisplayInRect_toBitmapImageRep_(hv.bounds(), hrep)
+    hdata = hrep.representationUsingType_properties_(_PNG, {})
+    hout = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "test_help.png")
+    check("help rendered to test_help.png",
+          bool(hdata and hdata.writeToFile_atomically_(hout, True)))
+
+    check("the hint bar names the keys it should",
+          all(h in "   ·   ".join(stache.HINTS)
+              for h in ("↵ copy", "esc", "⌘/ help", "click copy")),
+          str(stache.HINTS))
+
+    # Picking a clipping copies it, says so, and leaves the picker up.
+    picked = picker.grid.items()[1]
+    picker.panel.orderFront_(None)
+    before = picker.panel.isVisible()
+    picker.gridDidActivate_(picked)
+    check("the picker stays open after a pick",
+          picker.panel.isVisible() == before is True,
+          "visible=%s" % picker.panel.isVisible())
+    said = str(picker.status.stringValue())
+    check("it says the clipping is on the clipboard",
+          "clipboard" in said and said.startswith("✓"), said)
+    check("the message names what was copied",
+          ("that image" if picked.kind == "image" else "“") in said, said)
+    # 1.10.0 moved the search field to the far right, so the status line now
+    # starts at the left edge and the chips sit between the two.
+    check("the status line is left of the filter chips",
+          picker.status.frame().origin.x < picker.filter.frame().origin.x
+          and (picker.status.frame().origin.x
+               + picker.status.frame().size.width
+               <= picker.filter.frame().origin.x + 1),
+          "status %.0f..%.0f, chips start at %.0f"
+          % (picker.status.frame().origin.x,
+             picker.status.frame().origin.x + picker.status.frame().size.width,
+             picker.filter.frame().origin.x))
+    check("the search field is the rightmost thing in the header",
+          picker.search.frame().origin.x
+          > picker.filter.frame().origin.x + picker.filter.frame().size.width
+          and picker.search.frame().origin.x
+          > picker.help_button.frame().origin.x,
+          "chips end %.0f, help %.0f, search %.0f"
+          % (picker.filter.frame().origin.x + picker.filter.frame().size.width,
+             picker.help_button.frame().origin.x,
+             picker.search.frame().origin.x))
+    check("every chip carries a count",
+          all("(" in str(picker.filter.labelForSegment_(i))
+              for i in range(picker.filter.segmentCount())),
+          ", ".join(str(picker.filter.labelForSegment_(i))
+                    for i in range(picker.filter.segmentCount())))
+    # The selection must not drift onto the pinned card when the list is
+    # rebuilt — that is what made ⌫ ask about the wrong clipping.
+    store.set_pinned(picker.grid.items()[-1].id, True)
+    picker.reload()
+    chosen = picker.grid.items()[2]
+    picker.grid._selected = 2
+    picker.reload()
+    still = picker.grid.selectedItem()
+    check("the selection survives a rebuild",
+          still is not None and still.id == chosen.id,
+          "was id=%d, now id=%s" % (chosen.id, still and still.id))
+    check("it did not jump to the pinned card",
+          not picker.grid.selectedItem().pinned)
+    check("the grid takes the first click after focus is handed back",
+          picker.grid.acceptsFirstMouse_(None) is True)
+    store.set_pinned(picker.grid.items()[0].id, False)
+
+    # Clearing the message must not re-sort the cards under the pointer.
+    order_before = [i.id for i in picker.grid.items()]
+    picked_id = picker.grid.selectedItem().id
+    picker.clearFlash_(None)
+    check("clearing the message leaves the cards where they were",
+          [i.id for i in picker.grid.items()] == order_before,
+          "%s -> %s" % (order_before, [i.id for i in picker.grid.items()]))
+    check("and leaves the selection on the same clipping",
+          picker.grid.selectedItem().id == picked_id)
+    check("the message clears back to the ordinary status line",
+          "clipboard" not in str(picker.status.stringValue()),
+          str(picker.status.stringValue()))
+    picker.panel.orderOut_(None)
+
+    # A frame saved before the hint bar existed must not come back short.
+    from AppKit import NSMakeRect as _R
+    stache.defaults().setObject_forKey_(
+        stache.NSStringFromRect(_R(96, 700, 2265, 325)), stache.DEF_STRIP_FRAME)
+    picker._restoreFrame()
+    restored = picker.panel.frame()
+    needed = stache.STRIP_CONTENT_H + picker._chrome_(picker.panel)
+    check("a stale strip frame keeps its place but not its height",
+          abs(restored.size.height - needed) < 0.5 and
+          abs(restored.size.width - 2265) < 0.5 and
+          abs(restored.origin.x - 96) < 0.5,
+          "%.0f,%.0f %.0fx%.0f (needed height %.0f)"
+          % (restored.origin.x, restored.origin.y,
+             restored.size.width, restored.size.height, needed))
+    stache.defaults().removeObjectForKey_(stache.DEF_STRIP_FRAME)
+
+    # A pinned clipping cannot be deleted at all; an unpinned one can.
+    # _refusePinned_ and _confirmMany_ raise modal alerts, so they are
+    # stubbed out — what is under test is which of them gets reached.
+    plain = [i for i in picker.grid.items() if not i.pinned][0]
+    refused = []
+    picker._refusePinned_ = lambda pinned: refused.append(list(pinned))
+    picker._confirmMany_ = lambda count: True
+
+    before = store.count()
+    picker.gridDidDelete_([plain])
+    check("an unpinned clipping deletes without a question",
+          store.count() == before - 1 and not refused,
+          "count %d -> %d, refused=%d" % (before, store.count(), len(refused)))
+
+    keeper = [i for i in picker.grid.items()][0]
+    store.set_pinned(keeper.id, True)
+    pinned = store.get(keeper.id)
+    check("the store records the pin", bool(pinned.pinned))
+    before = store.count()
+    picker.gridDidDelete_([pinned])
+    check("a pinned clipping is refused, not deleted",
+          store.count() == before and len(refused) == 1,
+          "count %d -> %d, refused=%d" % (before, store.count(), len(refused)))
+
+    # A mixed selection deletes the loose ones and keeps the pinned one.
+    # Reload first: pinning does not rebuild the list, so the cards still
+    # carry the flags they were built with.
+    picker.reload()
+    loose = [i for i in picker.grid.items()
+             if not i.pinned and i.id != pinned.id][:2]
+    before = store.count()
+    picker.gridDidDelete_(loose + [pinned])
+    check("a mixed selection deletes only the unpinned",
+          store.count() == before - len(loose)
+          and store.get(pinned.id) is not None,
+          "count %d -> %d, deleted %d" % (before, store.count(), len(loose)))
+
+    # And a card that went stale still cannot destroy a pinned clipping.
+    stale = [i for i in picker.grid.items() if i.id == pinned.id]
+    if not stale:
+        picker.reload()
+        stale = [i for i in picker.grid.items() if i.id == pinned.id]
+    if stale:
+        stale[0].pinned = 0                     # what a stale card looks like
+        before = store.count()
+        picker.gridDidDelete_([stale[0]])
+        check("a stale card cannot delete a pinned clipping",
+              store.get(pinned.id) is not None and store.count() == before,
+              "count %d -> %d" % (before, store.count()))
+    check("and says what it kept",
+          "pinned" in str(picker.status.stringValue()),
+          str(picker.status.stringValue()))
+    store.set_pinned(pinned.id, False)
+
+    picker.grid.moveSelectionBy_(2)
+    check("arrow selection moves", picker.grid.selectedItem() is not None)
+
+    # Multiple selection: Shift extends from the anchor, Cmd toggles.
+    picker.reload()
+    grid = picker.grid
+    grid._selectOnly_(1)
+    check("a plain click selects one", grid.selectedItems() == [grid.items()[1]])
+    grid._selection = set(range(1, 4))
+    check("a range selects every card between the ends",
+          [i.id for i in grid.selectedItems()]
+          == [x.id for x in grid.items()[1:4]],
+          "%d selected" % len(grid.selectedItems()))
+    grid.setItems_(grid.items())
+    check("a rebuild collapses the selection back to the cursor",
+          len(grid.selectedItems()) == 1,
+          "%d selected" % len(grid.selectedItems()))
+
+    # A selection whose clipping is gone becomes NO selection, so a ⌫ that
+    # follows deletes nothing rather than something nobody chose.
+    grid._selectOnly_(2)
+    kept = [i for i in grid.items() if i.id != grid.items()[2].id]
+    grid.setItems_(kept)
+    check("a vanished clipping leaves nothing selected",
+          grid.selectedItem() is None and grid.selectedItems() == [],
+          "selected=%s" % grid.selectedItem())
+
+    # Unpinning under the Pinned chip keeps the card in sight: the filter
+    # falls back to All and the selection stays on the same clipping.
+    picker.reload()
+    victim = picker.grid.items()[0]
+    store.set_pinned(victim.id, True)
+    picker.filter.setSelectedSegment_(
+        [k for _, k in stache.FILTER_KINDS].index("pinned"))
+    picker.reload()
+    check("the Pinned chip shows only the pinned clipping",
+          [i.id for i in picker.grid.items()] == [victim.id],
+          "%d shown" % len(picker.grid.items()))
+    picker.grid._selectOnly_(0)
+    picker._menu_item = picker.grid.items()[0]
+    picker.menuPin_(None)
+    check("unpinning under the Pinned chip falls back to All",
+          picker.currentKind() is None, str(picker.currentKind()))
+    check("and the unpinned clipping is still the selected one",
+          picker.grid.selectedItem() is not None
+          and picker.grid.selectedItem().id == victim.id,
+          "selected=%s wanted=%s"
+          % (picker.grid.selectedItem() and picker.grid.selectedItem().id,
+             victim.id))
+    check("and it is no longer pinned",
+          not store.get(victim.id).pinned)
+    store.close()
+
+
+if __name__ == "__main__":
+    try:
+        test_store()
+        test_hotkey_labels()
+        test_menu()
+        test_capture_vs_use()
+        test_expiry()
+        test_prefs_layout()
+        test_dock()
+        test_search_dates()
+        test_render()
+    finally:
+        shutil.rmtree(SCRATCH, ignore_errors=True)
+    print("\n%d failure(s)" % len(FAILURES))
+    sys.exit(1 if FAILURES else 0)

@@ -1,0 +1,21 @@
+venv/
+build/
+dist/
+__pycache__/
+*.pyc
+# written by the test suite
+test_*.png
+
+# built by make_icon.py from icon/stache.pxd -> StacheIcon_source.png
+icon/Stache.iconset/
+icon/Stache.icns
+icon/Stache_glyph.png
+
+# local editing backups
+*.bak-*
+
+# macOS
+.DS_Store
+
+# signed/notarised output
+*.dmg
