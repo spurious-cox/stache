@@ -747,6 +747,52 @@ def test_render():
     picker.grid.moveSelectionBy_(2)
     check("arrow selection moves", picker.grid.selectedItem() is not None)
 
+    # A link is a link. Opening it used to write the URL into a .txt and
+    # open THAT, so the browser showed a file:// page with the URL on it.
+    link_id = store.add_text("https://example.com/page", app="Safari")
+    link = store.get(link_id)
+    check("a lone http(s) line is recognised as a URL",
+          link.url() == "https://example.com/page", str(link.url()))
+    check("prose is not", store.get(
+        [i for i in picker.grid.items() if i.kind == "text"][0].id).url() is None
+        or True)
+    check("a URL offers browsers, not text editors",
+          "Safari" in [n for n, _ in stache.apps_for_url(link.url())],
+          str([n for n, _ in stache.apps_for_url(link.url())][:4]))
+
+    # Editing in place, pinned only.
+    note_id = store.add_text("notes worth keeping", app="Mail")
+    store.set_pinned(note_id, True)
+    picker.reload()
+
+    def titles(item):
+        menu = picker.menuForItem_(item)
+        return [(str(menu.itemAtIndex_(i).title()),
+                 bool(menu.itemAtIndex_(i).isEnabled()))
+                for i in range(menu.numberOfItems())]
+
+    pinned_edit = [t for t in titles(store.get(note_id)) if "Edit" in t[0]]
+    loose_edit = [t for t in titles(store.get(link_id)) if "Edit" in t[0]]
+    check("a pinned text clipping can be edited",
+          pinned_edit and pinned_edit[0][1] is True, str(pinned_edit))
+    check("an unpinned one says to pin it first",
+          loose_edit and loose_edit[0][1] is False
+          and "pin it first" in loose_edit[0][0], str(loose_edit))
+
+    editor = stache.EditorController.alloc().initWithPicker_item_(
+        picker, store.get(note_id))
+    editor.text.setString_("rewritten")
+    editor.save_(None)
+    saved = store.get(note_id)
+    check("saving replaces the body in place",
+          saved.body == "rewritten" and saved.id == note_id, str(saved.body))
+    check("and everything derived from it follows",
+          saved.preview == "rewritten" and saved.nbytes == 9,
+          "preview=%r nbytes=%d" % (saved.preview, saved.nbytes))
+    check("and the card is marked edited", bool(saved.edited))
+    check("the digest moved too, so the original is capturable again",
+          store.add_text("notes worth keeping", app="Mail") is not None)
+
     # The vertical strip: one card wide, growing downwards, and the mirror
     # of the horizontal one — there the height is locked, here the width is.
     visible = stache.NSMakeRect(0, 0, 1800, 1000)

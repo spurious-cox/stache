@@ -33,6 +33,94 @@ typing Cmd-V for you - synthesising a keystroke is the one thing here that
 would have demanded Accessibility.
 
 History:
+  1.17.1 Documentation caught up with Quick Look: the help still described
+         Space as "open an image in Preview", the hint bar still said
+         "Space preview", and neither the help nor the README listed Quick
+         Look in the context menu.
+  1.17.0 Quick Look previews the SELECTED clipping and nothing else.
+
+         Handing it the whole visible list was the mistake behind both of
+         the last two versions' problems. The panel asks its data source
+         repeatedly, and preparing a text clipping WRITES a file, so every
+         query rewrote every text file in the history — and showing the list
+         meant it opened on item 0 and jumped. 1.16.2 papered over both with
+         a cache and a second index assignment; neither was needed once the
+         work was scoped to the one clipping being looked at, which is also
+         what the Finder does. 20 queries now cost 0.0004s.
+
+         Arrow keys still work: they go back to the grid and Quick Look
+         follows the selection, rather than navigating its own copy of the
+         list.
+  1.16.2 Quick Look is fast, and opens on the right clipping.
+
+         It was crawling because the data source rebuilt its file list on
+         every query, and building that list WRITES a .txt for every text
+         clipping — so the panel rewrote every text file on the machine
+         continuously while it was open. Measured at 20 clippings: 0.526s
+         for twenty rebuilds against 0.0002s cached, about three thousand
+         times. The list is now built once when the panel opens and thrown
+         away when it closes, and a rebuilt grid invalidates it.
+
+         And it briefly showed the FIRST clipping on the strip before
+         landing on the selected one, because the panel was ordered front
+         and only then told which item to show. The index is set before as
+         well as after.
+  1.16.1 Quick Look no longer dismisses the picker, and comes up with the
+         keyboard. Two faults with one cause: the picker hides when it loses
+         key, which is what makes clicking away close it, and Quick Look
+         takes key — so most of the time Stache vanished behind it. It is
+         now told to hold its ground, as it already was for Preferences and
+         the help, and released when Quick Look gives control back.
+
+         The panel also had to be CLICKED before Space or Esc would close
+         it. An accessory app's Quick Look panel comes up without key unless
+         the app is activated first, so the activation now happens before
+         the panel is ordered front.
+  1.16.0 Quick Look, on any clipping, at the top of the context menu and on
+         Space. It gets the whole visible list rather than one card, so the
+         arrow keys walk the clippings inside it exactly as they do in the
+         grid — and it follows the filter, so a Quick Look through Images
+         steps only through images. Text and images alike, because
+         openable_path already produces a real file for both.
+
+         Quartz is bundled as a PACKAGE, not an include: py2app compiles an
+         include into python314.zip where codesign cannot reach it, which is
+         how PixProFitText shipped 18 unsigned dylibs and had the archive
+         rejected. Checked after building — nothing unsignable left in the
+         zip, ten Quartz extensions extracted, none unsigned.
+  1.15.0 Three things a clipping could not do.
+
+         A LINK opens as a link. Every text clipping was written to a .txt
+         and that file opened, so a URL reached the browser as a file:// page
+         with the address printed on it, and Open With offered Emacs and Word
+         for a web page. A clipping whose whole body is one http(s) URL now
+         goes to the browser, and Open With asks the system what opens URLs.
+
+         A PINNED TEXT clipping can be edited in place. Pinned only, and the
+         restriction is the point: pinning is what exempts a clipping from
+         the item cap, the age cap and Clear History, so it is the only kind
+         where an edit is not work the retention sweep deletes later.
+
+         A PINNED IMAGE can be replaced from the clipboard. This is the other
+         half of "Open in Pixelmator": copying the edit back is an ordinary
+         pasteboard write, so it made a SECOND clipping and left the pinned
+         original alone — and at card size a crop of a few pixels looks
+         identical, so it appeared to have worked when it had not.
+
+         Everything derived from the content moves with it: the preview, the
+         byte count, and the DIGEST — without that last one, re-copying the
+         original text would have been swallowed as a recall of the row that
+         no longer holds it. Editing counts as a use, so the clipping goes to
+         the front and its retention clock restarts, and the card shows
+         "edited" beside the date rather than claiming to be a verbatim
+         capture.
+  1.14.1 Documentation made true. The README claimed chip counts follow the
+         search and that the hint bar is always present, both false since
+         1.13, and the in-app help had never mentioned Cmd-0 or the three
+         layouts. The test suite stopped leaving DEF_LAYOUT set, which had
+         been silently changing the running app's layout, and the card-size
+         test stopped hard-coding "large" — it passed only while that
+         happened to be the preference in force.
   1.14.0 The name and copyright are back in column layout, as ordinary text
          above the search field. The title bar could not hold them — at
          230pt the traffic lights, version, centred name and copyright
@@ -310,7 +398,7 @@ History:
   1.0.0  First release.
 """
 
-APP_VERSION = "1.14.1"
+APP_VERSION = "1.17.1"
 COPYRIGHT = "© 2026 Tim McCoy"
 APP_NAME = "Stache"
 BUNDLE_ID = "com.timmccoy.stache"
@@ -397,6 +485,7 @@ from AppKit import (
     NSWindowStyleMaskUtilityWindow,
     NSWorkspace,
 )
+from Quartz import QLPreviewPanel
 from Foundation import (
     NSAttributedString,
     NSBundle,
@@ -601,16 +690,36 @@ def expiry_warning_days(max_days):
     return max(1.0, max_days * 0.1)
 
 
+def preview_of(text):
+    """The one-line summary a card draws. Shared by capture and by editing:
+    two ways of deriving it would eventually disagree."""
+    return " ".join((text or "").split())[:400]
+
+
 class Item(object):
     """One row of the history, in a form the views can draw without SQL."""
 
     __slots__ = ("id", "kind", "created", "preview", "body", "blob", "thumb",
-                 "width", "height", "nbytes", "app", "pinned", "used")
+                 "width", "height", "nbytes", "app", "pinned", "used",
+                 "edited")
 
     def __init__(self, row):
         (self.id, self.kind, self.created, self.preview, self.body,
          self.blob, self.thumb, self.width, self.height, self.nbytes,
-         self.app, self.pinned, self.used) = row
+         self.app, self.pinned, self.used, self.edited) = row
+
+    def url(self):
+        """The link, if this clipping is one — otherwise None.
+
+        The same rule the URL filter counts: a text clipping whose whole
+        body is a single http(s) link. Deciding it here rather than only in
+        SQL keeps the two answers from drifting apart."""
+        if self.kind != "text":
+            return None
+        text = (self.body or self.preview or "").strip()
+        if " " in text or "\n" in text:
+            return None
+        return text if text.startswith(("http://", "https://")) else None
 
     @property
     def blob_path(self):
@@ -679,7 +788,8 @@ class Store(object):
     """
 
     COLUMNS = ("id, kind, created, preview, body, blob, thumb, "
-               "width, height, nbytes, app, pinned, used")
+               "width, height, nbytes, app, pinned, used, "
+               "COALESCE(edited, 0)")
 
     def __init__(self, path=DB_PATH):
         for d in (SUPPORT_DIR, BLOB_DIR, THUMB_DIR, EXPORT_DIR):
@@ -701,6 +811,11 @@ class Store(object):
             # two are kept apart.
             self.db.execute("ALTER TABLE items ADD COLUMN used REAL")
             self.db.execute("UPDATE items SET used = created")
+        if "edited" not in columns:
+            # 1.15.0: a pinned clipping can be edited in place, and a card
+            # that has been must stop claiming to be a verbatim capture.
+            self.db.execute(
+                "ALTER TABLE items ADD COLUMN edited INTEGER NOT NULL DEFAULT 0")
         rows = self.db.execute(
             "SELECT id, created FROM items WHERE stamp IS NULL OR stamp = ''"
         ).fetchall()
@@ -814,7 +929,7 @@ class Store(object):
         digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
         if self._promote(digest):
             return None
-        preview = " ".join(text.split())[:400]
+        preview = preview_of(text)
         now = time.time()
         cur = self.db.execute(
             "INSERT INTO items (kind, created, digest, preview, body, "
@@ -874,6 +989,53 @@ class Store(object):
         self.db.execute("UPDATE items SET thumb = ? WHERE id = ?",
                         (name, item_id))
         self.db.commit()
+
+    def set_body(self, item_id, text):
+        """Replace a text clipping's content, in place.
+
+        Everything derived from the body goes with it — the preview the card
+        draws and the byte count it reports — or the card would describe the
+        old content. `edited` is set so it stops claiming to be a verbatim
+        capture, and `used` is touched because editing is using it: it goes
+        to the front and its retention clock restarts.
+        """
+        text = text or ""
+        self.db.execute(
+            "UPDATE items SET body = ?, preview = ?, nbytes = ?, "
+            "digest = ?, edited = 1, used = ? WHERE id = ?",
+            (text, preview_of(text), len(text.encode("utf-8")),
+             hashlib.sha256(text.encode("utf-8")).hexdigest(),
+             time.time(), item_id))
+        self.db.commit()
+
+    def replace_image(self, item_id, png, width, height):
+        """Swap an image clipping's picture for another, keeping its row.
+
+        The blob keeps its filename, so nothing else has to be told. The
+        thumbnail is rebuilt rather than left describing the old picture,
+        which is exactly the trap a crop falls into: at card size a small
+        change is invisible and the stale thumbnail looks correct.
+        """
+        row = self.db.execute(
+            "SELECT blob FROM items WHERE id = ?", (item_id,)).fetchone()
+        if row is None or not row[0]:
+            return False
+        name = row[0]
+        path = os.path.join(BLOB_DIR, name)
+        try:
+            os.makedirs(BLOB_DIR, exist_ok=True)
+            with open(path, "wb") as fh:
+                fh.write(png)
+        except OSError:
+            return False
+        thumb = make_thumbnail(path, name)
+        self.db.execute(
+            "UPDATE items SET width = ?, height = ?, nbytes = ?, thumb = ?, "
+            "digest = ?, edited = 1, used = ? WHERE id = ?",
+            (width, height, len(png), thumb or "",
+             hashlib.sha256(png).hexdigest(), time.time(), item_id))
+        self.db.commit()
+        return True
 
     def set_pinned(self, item_id, pinned):
         self.db.execute("UPDATE items SET pinned = ? WHERE id = ?",
@@ -1433,6 +1595,8 @@ class GridView(NSView):
         stamp = NSMakeRect(rect.origin.x + CARD_PAD + 2,
                            rect.origin.y + CARD_PAD - 1, text_w, DATE_H)
         title = ("📌 " if item.pinned else "") + item.when()
+        if getattr(item, "edited", 0):
+            title += "  · edited"
         drawn = NSAttributedString.alloc().initWithString_attributes_(title, {
             NSFontAttributeName: NSFont.systemFontOfSize_(11.5),
             NSForegroundColorAttributeName: NSColor.labelColor(),
@@ -1620,10 +1784,8 @@ class GridView(NSView):
             chosen = self.selectedItems()
             if chosen and self.delegate is not None:
                 self.delegate.gridDidDelete_(chosen)
-        elif code == 49:                                   # space: open it
-            item = self.selectedItem()
-            if item is not None and self.delegate is not None:
-                self.delegate.gridDidPreview_(item)
+        elif code == 49:                                   # space: Quick Look
+            self.toggleQuickLook()
         elif (event.modifierFlags() & NSEventModifierFlagCommand and
               (event.charactersIgnoringModifiers() or "") in ("/", "?")):
             if self.delegate is not None:
@@ -1636,6 +1798,70 @@ class GridView(NSView):
             self.delegate.gridDidType_(event)
         else:
             objc.super(GridView, self).keyDown_(event)
+
+    # -- Quick Look --------------------------------------------------------
+
+    def toggleQuickLook(self):
+        """Show or hide Quick Look, without the picker dismissing itself.
+
+        Quick Look takes key, and the picker hides when it loses key — that
+        is what makes clicking away close it. So the picker is told to hold
+        its ground first, the same as for Preferences and the help.
+
+        The app is activated BEFORE the panel is ordered front. Without
+        that, an accessory app's Quick Look panel comes up without key, and
+        it has to be clicked before Space or Esc will close it again.
+        """
+        if not self._items:
+            return
+        panel = QLPreviewPanel.sharedPreviewPanel()
+        if panel.isVisible():
+            panel.orderOut_(None)
+            return
+        if self.delegate is not None:
+            self.delegate.holdOpen()
+        NSApp.activateIgnoringOtherApps_(True)
+        panel.makeKeyAndOrderFront_(None)
+
+    def acceptsPreviewPanelControl_(self, panel):
+        return True
+
+    def beginPreviewPanelControl_(self, panel):
+        panel.setDelegate_(self)
+        panel.setDataSource_(self)
+
+    def endPreviewPanelControl_(self, panel):
+        # Quick Look has given the keyboard back; the picker may dismiss on
+        # click-away again.
+        if self.delegate is not None:
+            self.delegate.releaseHold()
+
+    def numberOfPreviewItemsInPreviewPanel_(self, panel):
+        """ONE — whichever clipping is selected.
+
+        Handing Quick Look the whole list was a mistake with a cost: the
+        panel asks its data source repeatedly, and preparing a text clipping
+        WRITES a file, so every query rewrote every text file in the
+        history. Previewing only the selection is both what Finder does and
+        the only work worth doing.
+        """
+        return 1 if self.selectedItem() is not None else 0
+
+    def previewPanel_previewItemAtIndex_(self, panel, index):
+        item = self.selectedItem()
+        if item is None:
+            return None
+        path = openable_path(item)
+        return NSURL.fileURLWithPath_(path) if path else None
+
+    def previewPanel_handleEvent_(self, panel, event):
+        """Arrow keys go back to the grid, and Quick Look follows the
+        selection — the same way it does in the Finder."""
+        if event.type() == 10 and event.keyCode() in (123, 124, 125, 126):
+            self.keyDown_(event)
+            QLPreviewPanel.sharedPreviewPanel().reloadData()
+            return True
+        return False
 
     def cancelOperation_(self, sender):                    # Esc
         if self.delegate is not None:
@@ -1787,7 +2013,7 @@ FILTER_X = 300                            # where the chips start, when there
 SOURCE_ICON = 16                          # the source app badge on a card
 
 HINTS = ("click copy", "⌥click select", "⇧click range", "⌘click add",
-         "↵ copy", "Space preview", "⌫ delete", "type to search",
+         "↵ copy", "Space Quick Look", "⌫ delete", "type to search",
          "⌘0 reset place", "⌘/ help", "esc closes")
 
 
@@ -2580,7 +2806,9 @@ class PickerController(NSObject):
         self.app.showHelp()
 
     def gridDidPreview_(self, item):
-        # Space is the quick look, so it goes to Preview rather than to
+        # NOT reached from Space since 1.16.0 — real Quick Look replaced
+        # it — but kept, because "Open in Preview" in the context menu is
+        # the only path that forces Preview specifically rather than
         # whatever heavyweight editor happens to own PNGs on this Mac.
         if item.kind == "image" and item.blob_path:
             open_in_preview(item.blob_path)
@@ -2595,24 +2823,32 @@ class PickerController(NSObject):
                 title, selector, "")
             mi.setTarget_(self)
             mi.setEnabled_(enabled)
+        add("Quick Look", "menuQuickLook:")
+        menu.addItem_(NSMenuItem.separatorItem())
         add("Copy", "menuCopy:")
         if item.kind == "image" and item.body:
             add("Copy Text From This Capture", "menuCopyAlt:")
         menu.addItem_(NSMenuItem.separatorItem())
 
+        # A link opens as a LINK. Writing it to a .txt and opening that
+        # showed the browser a file:// page with the URL printed on it,
+        # which is not what anyone means by opening a URL.
+        link = item.url()
+        self._menu_url = link
         path = openable_path(item)
         self._menu_path = path
         # Name the item after the application that will actually open it.
         # "Open in Preview" was wrong for anyone whose default image app is
         # something else, which on this Mac is Pixelmator Pro.
-        opener = _default_app_name(path)
+        opener = (_default_browser_name(link) if link
+                  else _default_app_name(path))
         add("Open in %s" % opener if opener else "Open", "menuOpen:",
-            path is not None)
+            link is not None or path is not None)
         if item.kind == "image" and opener != "Preview" \
                 and _preview_app() is not None:
             add("Open in Preview", "menuPreview:", path is not None)
 
-        candidates = apps_for(path)
+        candidates = apps_for_url(link) if link else apps_for(path)
         with_item = menu.addItemWithTitle_action_keyEquivalent_(
             "Open With", None, "")
         submenu = NSMenu.alloc().initWithTitle_("Open With")
@@ -2629,9 +2865,19 @@ class PickerController(NSObject):
             "Other…", "menuOpenOther:", "")
         other.setTarget_(self)
         menu.setSubmenu_forItem_(submenu, with_item)
-        with_item.setEnabled_(path is not None)
+        with_item.setEnabled_(link is not None or path is not None)
 
         add("Reveal in Finder", "menuReveal:", path is not None)
+        # Editing in place is offered only for PINNED clippings: an unpinned
+        # one is subject to the item cap and the age cap, so the edit would
+        # be work the retention sweep deletes later.
+        if item.kind == "text":
+            add("Edit…" if item.pinned else "Edit… (pin it first)",
+                "menuEdit:", bool(item.pinned))
+        else:
+            add("Update From Clipboard"
+                if item.pinned else "Update From Clipboard (pin it first)",
+                "menuUpdateImage:", bool(item.pinned))
         menu.addItem_(NSMenuItem.separatorItem())
         add("Unpin" if item.pinned else "Pin", "menuPin:")
         add("Delete", "menuDelete:")
@@ -2645,7 +2891,10 @@ class PickerController(NSObject):
         self._announceCopied_(self._menu_item)
 
     def menuOpen_(self, sender):
-        if self._menu_path:
+        if getattr(self, "_menu_url", None):
+            NSWorkspace.sharedWorkspace().openURL_(
+                NSURL.URLWithString_(self._menu_url))
+        elif self._menu_path:
             NSWorkspace.sharedWorkspace().openURL_(
                 NSURL.fileURLWithPath_(self._menu_path))
 
@@ -2654,14 +2903,17 @@ class PickerController(NSObject):
             open_in_preview(self._menu_path)
 
     def menuOpenWith_(self, sender):
-        if self._menu_path:
-            open_with(self._menu_path, self._menu_apps.get(int(sender.tag())))
+        app = self._menu_apps.get(int(sender.tag()))
+        if getattr(self, "_menu_url", None):
+            open_url_with(self._menu_url, app)
+        elif self._menu_path:
+            open_with(self._menu_path, app)
 
     def menuOpenOther_(self, sender):
         """Pick any application, the way the Finder's Other… does."""
-        if not self._menu_path:
+        if not (self._menu_path or getattr(self, "_menu_url", None)):
             return
-        path = self._menu_path
+        path, link = self._menu_path, getattr(self, "_menu_url", None)
         self.hide()
         panel = NSOpenPanel.openPanel()
         panel.setTitle_("Choose an application")
@@ -2673,13 +2925,66 @@ class PickerController(NSObject):
         panel.setDirectoryURL_(NSURL.fileURLWithPath_("/Applications"))
         NSApp.activateIgnoringOtherApps_(True)
         if panel.runModal() == 1 and panel.URLs():
-            open_with(path, panel.URLs()[0])
+            if link:
+                open_url_with(link, panel.URLs()[0])
+            else:
+                open_with(path, panel.URLs()[0])
 
     def menuReveal_(self, sender):
         if self._menu_path:
             NSWorkspace.sharedWorkspace().\
                 activateFileViewerSelectingURLs_(
                     [NSURL.fileURLWithPath_(self._menu_path)])
+
+    def menuQuickLook_(self, sender):
+        """Quick Look, on the card the menu was opened on."""
+        item = self._menu_item
+        if item is None:
+            return
+        for index, other in enumerate(self.grid.items()):
+            if other.id == item.id:
+                self.grid._selectOnly_(index)
+                self.grid.setNeedsDisplay_(True)
+                break
+        self.panel.makeFirstResponder_(self.grid)
+        self.grid.toggleQuickLook()
+
+    def menuEdit_(self, sender):
+        item = self._menu_item
+        if item is None or item.kind != "text" or not item.pinned:
+            return
+        self.holdOpen()
+        self._editor = EditorController.alloc().initWithPicker_item_(self, item)
+        self._editor.show()
+
+    def menuUpdateImage_(self, sender):
+        """Replace a pinned image with whatever is on the clipboard now.
+
+        This is the other half of "Open in Pixelmator": the round trip used
+        to end with a SECOND clipping, because copying the edit back is an
+        ordinary pasteboard write and the watcher records it like any other.
+        Worse, at card size a small change is invisible, so the pinned
+        original looked as though it had been updated when it had not.
+        """
+        item = self._menu_item
+        if item is None or item.kind != "image" or not item.pinned:
+            return
+        png, width, height = png_from_pasteboard(
+            NSPasteboard.generalPasteboard())
+        if not png:
+            self.holdOpen()
+            _alert("No image on the clipboard",
+                   "Copy the edited picture first — in most editors that is "
+                   "⌘C, or ⇧⌘C for the flattened image — then choose Update "
+                   "From Clipboard again.")
+            self.releaseHold()
+            return
+        if self.app.store.replace_image(item.id, png, width, height):
+            self.reload()
+            self.status.setTextColor_(NSColor.secondaryLabelColor())
+            self.status.setStringValue_("Updated from the clipboard")
+            self.performSelector_withObject_afterDelay_(
+                "_clearStatus:", None, 2.5)
 
     def menuPin_(self, sender):
         """Pin or unpin — and stay with the clipping when it moves.
@@ -2741,6 +3046,52 @@ def apps_for(path):
     return out
 
 
+def apps_for_url(link):
+    """Every application that says it can open this LINK, best first —
+    browsers, not text editors. Asking with the file the URL was written to
+    produced a list of editors, which is how "Open With" came to offer
+    Emacs for a web page."""
+    if not link:
+        return []
+    url = NSURL.URLWithString_(link)
+    if url is None:
+        return []
+    urls = NSWorkspace.sharedWorkspace().URLsForApplicationsToOpenURL_(url) or []
+    seen, out = set(), []
+    for app in urls:
+        name = os.path.splitext(os.path.basename(str(app.path())))[0]
+        if name not in seen:
+            seen.add(name)
+            out.append((name, app))
+    return out
+
+
+def open_url_with(link, app_url):
+    """Open a link, optionally in one specific application."""
+    url = NSURL.URLWithString_(link)
+    if url is None:
+        return
+    if app_url is None:
+        NSWorkspace.sharedWorkspace().openURL_(url)
+        return
+    NSWorkspace.sharedWorkspace().\
+        openURLs_withApplicationAtURL_configuration_completionHandler_(
+            [url], app_url, NSWorkspaceOpenConfiguration.configuration(), None)
+
+
+def _default_browser_name(link):
+    """Whatever would open this link if it were clicked."""
+    if not link:
+        return None
+    url = NSURL.URLWithString_(link)
+    if url is None:
+        return None
+    app = NSWorkspace.sharedWorkspace().URLForApplicationToOpenURL_(url)
+    if app is None:
+        return None
+    return os.path.splitext(os.path.basename(str(app.path())))[0]
+
+
 def open_with(path, app_url):
     """Open a clipping with one specific application."""
     if app_url is None:
@@ -2784,6 +3135,92 @@ def _human_bytes(n):
 # ---------------------------------------------------------------------------
 # Help
 # ---------------------------------------------------------------------------
+
+class EditorController(NSObject):
+    """A plain editor for one PINNED text clipping, saving in place.
+
+    Pinned only, and the restriction is the point rather than a limitation:
+    a pinned clipping is exempt from the item cap, the age cap and Clear
+    History, so it is the only kind where editing is not work the retention
+    sweep will quietly delete later.
+    """
+
+    def initWithPicker_item_(self, picker, item):
+        self = objc.super(EditorController, self).init()
+        if self is None:
+            return None
+        self.picker = picker
+        self.item_id = item.id
+        panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+            NSMakeRect(0, 0, 560, 420),
+            NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
+            NSWindowStyleMaskResizable | NSWindowStyleMaskUtilityWindow,
+            NSBackingStoreBuffered, False)
+        panel.setTitle_("Edit clipping")
+        panel.setReleasedWhenClosed_(False)
+        panel.setDelegate_(self)
+        panel.setMinSize_(NSMakeSize(360, 240))
+        content = panel.contentView()
+        size = content.bounds().size
+
+        scroll = NSScrollView.alloc().initWithFrame_(
+            NSMakeRect(12, 52, size.width - 24, size.height - 64))
+        scroll.setHasVerticalScroller_(True)
+        scroll.setBorderType_(2)                       # bezel
+        scroll.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
+        text = NSTextView.alloc().initWithFrame_(scroll.bounds())
+        text.setEditable_(True)
+        text.setRichText_(False)
+        text.setFont_(NSFont.monospacedSystemFontOfSize_weight_(12, 0.0))
+        text.setString_(item.body or item.preview or "")
+        text.setAutoresizingMask_(NSViewWidthSizable)
+        scroll.setDocumentView_(text)
+        content.addSubview_(scroll)
+        self.text = text
+
+        save = NSButton.alloc().initWithFrame_(
+            NSMakeRect(size.width - 12 - 96, 12, 96, 30))
+        save.setTitle_("Save")
+        save.setBezelStyle_(1)
+        save.setKeyEquivalent_("\r")
+        save.setTarget_(self)
+        save.setAction_("save:")
+        save.setAutoresizingMask_(NSViewMinXMargin)
+        content.addSubview_(save)
+
+        cancel = NSButton.alloc().initWithFrame_(
+            NSMakeRect(size.width - 12 - 96 - 8 - 90, 12, 90, 30))
+        cancel.setTitle_("Cancel")
+        cancel.setBezelStyle_(1)
+        cancel.setKeyEquivalent_("\033")               # esc
+        cancel.setTarget_(self)
+        cancel.setAction_("cancel:")
+        cancel.setAutoresizingMask_(NSViewMinXMargin)
+        content.addSubview_(cancel)
+
+        self.panel = panel
+        return self
+
+    def show(self):
+        self.panel.center()
+        self.panel.makeKeyAndOrderFront_(None)
+        self.panel.makeFirstResponder_(self.text)
+        NSApp.activateIgnoringOtherApps_(True)
+
+    def save_(self, sender):
+        self.picker.app.store.set_body(self.item_id,
+                                       str(self.text.string() or ""))
+        self.panel.orderOut_(None)
+        self.picker.releaseHold()
+        self.picker.reload()
+
+    def cancel_(self, sender):
+        self.panel.orderOut_(None)
+        self.picker.releaseHold()
+
+    def windowWillClose_(self, note):
+        self.picker.releaseHold()
+
 
 class HelpTextView(NSTextView):
     """The help text, which answers the zoom keys like a document would.
@@ -2834,9 +3271,9 @@ HELP_SECTIONS = (
                    "the clipboard"),
         ("↵", "copy the selected clipping and close"),
         ("← → ↑ ↓", "move the selection"),
-        ("Space", "open an image in Preview"),
+        ("Space", "Quick Look the selected clipping — text or image. The arrow keys keep working, and the preview follows them"),
         ("⌫", "delete the selected clipping for good"),
-        ("right-click", "Copy · Open · Open With ▸ · Reveal in Finder · "
+        ("right-click", "Quick Look · Copy · Open · Open With ▸ · Reveal in Finder · "
                         "Pin · Delete"),
         ("⌘0", "put the picker back where it calculated it belonged, "
                 "forgetting where it was dragged"),
@@ -2850,6 +3287,20 @@ HELP_SECTIONS = (
         ("8/28", "or 2026-08-28, or 2026, or 12:55 pm"),
         ("All / Pinned / Images / Text / URL",
          "narrow it by kind; each chip carries its own count"),
+    )),
+    ("Changing one", (
+        ("Open", "a link opens in your browser; anything else opens as a "
+                 "file, in whichever application handles it"),
+        ("Edit…", "rewrite a PINNED text clipping in place. Only pinned "
+                  "ones: an unpinned clipping is subject to the item and "
+                  "age limits, so the edit would not last"),
+        ("Update From Clipboard",
+         "replace a PINNED image with whatever is on the clipboard — the "
+         "other half of opening it in an editor. Copying an edit back on "
+         "its own makes a NEW clipping instead, leaving the original pinned"),
+        ("edited", "appears beside the date once a clipping has been "
+                   "changed, so a card never claims to be a verbatim "
+                   "capture when it is not"),
     )),
     ("Keeping things", (
         ("kept alive", "the age limit counts from the last time you used a "

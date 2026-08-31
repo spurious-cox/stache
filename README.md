@@ -75,7 +75,7 @@ In the picker:
 | arrows | move the selection (in a strip or column, all four step by one) |
 | ⌘0 | put the panel back where it calculated it belonged |
 | Return | copy the selected card |
-| Space | quick look — opens an image in Preview (text cards just copy) |
+| Space | Quick Look the selected clipping — text or image |
 | Delete | remove the selected clipping(s) for good — asks once for more than one |
 | type anything | jumps into the search field |
 | ⌘/ | the full help |
@@ -138,6 +138,42 @@ into its tooltip.
 A **URL** is a text clipping whose entire body is one link. It is worked out
 from the text rather than stored, so nothing had to be migrated, and a URL is
 *not* also counted as text — the four kinds add up to the total.
+
+## Opening and changing a clipping
+
+Right-click a card for **Quick Look**, **Copy**, **Open**, **Open With ▸**,
+**Reveal in Finder**, and — for a pinned clipping — **Edit…** or **Update
+From Clipboard**.
+
+**Quick Look** previews the selected clipping, text or image alike, on Space
+or from the top of the menu. It shows one clipping — the selected one — and
+follows the arrow keys, exactly as it does in the Finder.
+
+**A link opens as a link.** A clipping whose whole body is one http(s) URL is
+handed to your browser. Everything else is written out to a real file and
+opened with whatever handles that file, which is why Open With offers
+browsers for a URL and text editors for prose.
+
+**Editing is for pinned clippings only**, and the restriction is the point
+rather than a limitation. Pinning is what exempts a clipping from the item
+cap, the age cap and Clear History — so a pinned clipping is the only kind
+where an edit is not work the retention sweep quietly deletes later. Unpinned
+cards say **Edit… (pin it first)**.
+
+* **Edit…** opens a plain editor on a text clipping. Save replaces the body
+  in place, along with everything derived from it — the preview the card
+  draws, the byte count, and the digest used to spot duplicates.
+* **Update From Clipboard** replaces a pinned *image* with whatever is on the
+  clipboard now. This is the other half of opening one in an editor: copying
+  your edit back is an ordinary pasteboard write, so on its own it creates a
+  **new** clipping and leaves the pinned original untouched. That is easy to
+  miss, because at card size a small change — a crop of a few pixels — looks
+  identical.
+
+Once a clipping has been changed the card shows **edited** beside its date. A
+card describes something that was copied, with a capture time and a source
+application; once you have rewritten it that is no longer strictly true, and
+the card says so rather than pretending.
 
 ## Pinning
 
