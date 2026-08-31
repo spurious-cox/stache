@@ -7,6 +7,14 @@ Clipboard history for macOS.
 Notarized and stapled by Apple — open the DMG and drag Stache to
 Applications. No Gatekeeper warning, and no special permissions needed.
 
+**Updating: quit Stache first** — menu bar S → Quit. If it is running with
+*Open Stache at login* enabled, a LaunchAgent is watching it, and replacing a
+live app bundle is unreliable: the old version can survive the copy and keep
+running, so the new one never appears to install. Quitting properly is enough
+— the agent does not relaunch after a clean quit, only after a crash. Killing
+the process instead (`pkill`, Force Quit) *does* count as a crash and will
+bring the old copy straight back.
+
 The name is the joke: a *stache* is where you *stash* things, the two words
 sound identical, and this is where the clipboard gets stashed and recalled
 from. The moustaches on the icon are that pun made visible. A background agent records everything you copy —

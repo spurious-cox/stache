@@ -33,6 +33,13 @@ typing Cmd-V for you - synthesising a keystroke is the one thing here that
 would have demanded Accessibility.
 
 History:
+  1.17.2 Says to quit before updating. The LaunchAgent already distinguishes
+         a clean quit (not relaunched) from a crash (relaunched) — but
+         nothing told anyone, and replacing a LIVE bundle is unreliable: on
+         Deb's Mac 1.9.0 survived three installs of 1.17.1 and kept running.
+         Killing the process instead of quitting counts as a crash, so the
+         old copy comes straight back, which is what made it look as though
+         the DMG were at fault.
   1.17.1 Documentation caught up with Quick Look: the help still described
          Space as "open an image in Preview", the hint bar still said
          "Space preview", and neither the help nor the README listed Quick
@@ -398,7 +405,7 @@ History:
   1.0.0  First release.
 """
 
-APP_VERSION = "1.17.1"
+APP_VERSION = "1.17.2"
 COPYRIGHT = "© 2026 Tim McCoy"
 APP_NAME = "Stache"
 BUNDLE_ID = "com.timmccoy.stache"
@@ -3318,6 +3325,10 @@ HELP_SECTIONS = (
          "a row along the bottom, a column up the left edge, or a window of "
          "rows. Drag any of them anywhere and resize them — the place is "
          "remembered, and ⌘0 undoes it"),
+        ("updating", "quit Stache before replacing it. The LaunchAgent "
+                     "does not relaunch after a clean quit, but killing it "
+                     "counts as a crash and brings the old copy back — so a "
+                     "new version can appear not to install at all"),
         ("Preferences", "card size, layout, strip width, hotkey, how much "
                         "history to keep, open at login"),
         ("in the shell", "`stache` lists it, `stache copy 3` recalls it"),
