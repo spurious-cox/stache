@@ -33,6 +33,22 @@ typing Cmd-V for you - synthesising a keystroke is the one thing here that
 would have demanded Accessibility.
 
 History:
+  1.12.0 A COLUMN arrangement: the strip stood on end. One card wide,
+         growing downwards, parked up the left edge clear of the Dock, and
+         the exact mirror of the horizontal strip — there the height is
+         dictated by the card and the width is yours to drag, here the width
+         is dictated and the height is yours. Arrow keys step by one in
+         either, as they always did in a single row.
+
+         Each arrangement now remembers its OWN frame. Sharing one key made
+         switching a fight: a column's tall narrow frame is nonsense applied
+         to a strip.
+
+         And Cmd-0 puts the panel back where it calculated it belonged,
+         forgetting where it was dragged. Remembering the position is what
+         makes dragging useful and is also what makes it a trap — a strip
+         dragged onto a screen that is no longer attached is remembered
+         just as faithfully as one dragged somewhere sensible.
   1.11.3 The name in the title bar is not clipped. _bar_label sizes the field
          to its text, but the centre piece then switched to 13pt bold without
          re-measuring, so the frame was still the width 11pt regular needed.
@@ -222,7 +238,7 @@ History:
   1.0.0  First release.
 """
 
-APP_VERSION = "1.11.3"
+APP_VERSION = "1.12.0"
 COPYRIGHT = "© 2026 Tim McCoy"
 APP_NAME = "Stache"
 BUNDLE_ID = "com.timmccoy.stache"
@@ -349,7 +365,8 @@ DEF_MAX_DAYS = "StacheMaxDays"
 DEF_CAPTURE_IMAGES = "StacheCaptureImages"
 DEF_PANEL_FRAME = "StachePanelFrame"      # grid layout's saved frame
 DEF_STRIP_FRAME = "StacheStripFrame"      # strip layout's saved frame
-DEF_LAYOUT = "StacheLayout"               # "strip" or "grid"
+DEF_LAYOUT = "StacheLayout"               # "strip", "column" or "grid"
+DEF_COLUMN_FRAME = "StacheColumnFrame"    # column layout's saved frame
 DEF_STRIP_PCT = "StacheStripWidthPercent"  # strip width, % of the screen
 DEF_CARD_SIZE = "StacheCardSize"          # "small", "medium" or "large"
 
@@ -1092,6 +1109,7 @@ class GridView(NSView):
         self._hover = -1
         self._thumbs = {}                 # item id -> NSImage, drawn lazily
         self.single_row = False           # strip layout: one scrolling row
+        self.single_col = False           # column layout: one scrolling column
         self.delegate = None
         self._tracking = None
         return self
@@ -1112,6 +1130,8 @@ class GridView(NSView):
         return True
 
     def columns(self):
+        if self.single_col:
+            return 1
         if self.single_row:
             return max(1, len(self._items))
         usable = self.bounds().size.width - 2 * MARGIN + GAP
@@ -1134,12 +1154,19 @@ class GridView(NSView):
     def contentHeight(self):
         if self.single_row:
             return MARGIN * 2 + CARD_H
+        if self.single_col:
+            count = len(self._items)
+            if not count:
+                return 200
+            return MARGIN * 2 + count * CARD_H + (count - 1) * GAP
         if not self._items:
             return 200
         rows = (len(self._items) + self.columns() - 1) // self.columns()
         return MARGIN * 2 + rows * CARD_H + (rows - 1) * GAP
 
     def contentWidth(self):
+        if self.single_col:
+            return MARGIN * 2 + CARD_W
         count = len(self._items)
         if not count:
             return 200
@@ -1153,6 +1180,10 @@ class GridView(NSView):
             # scroll view scrolls horizontally and never vertically.
             self.setFrameSize_(NSMakeSize(
                 max(self.contentWidth(), bounds.width), bounds.height))
+        elif self.single_col:
+            # The mirror: one card wide, growing downwards.
+            self.setFrameSize_(NSMakeSize(
+                bounds.width, max(self.contentHeight(), bounds.height)))
         else:
             self.setFrameSize_(NSMakeSize(bounds.width, self.contentHeight()))
         self.setNeedsDisplay_(True)
@@ -1493,9 +1524,11 @@ class GridView(NSView):
         elif code == 124:                                  # right
             self.moveSelectionBy_(1)
         elif code == 126:                                  # up
-            self.moveSelectionBy_(-1 if self.single_row else -cols)
+            self.moveSelectionBy_(
+                -1 if (self.single_row or self.single_col) else -cols)
         elif code == 125:                                  # down
-            self.moveSelectionBy_(1 if self.single_row else cols)
+            self.moveSelectionBy_(
+                1 if (self.single_row or self.single_col) else cols)
         elif code == 115:                                  # home
             self.moveSelectionBy_(-len(self._items))
         elif code == 119:                                  # end
@@ -1516,6 +1549,10 @@ class GridView(NSView):
               (event.charactersIgnoringModifiers() or "") in ("/", "?")):
             if self.delegate is not None:
                 self.delegate.gridDidAskForHelp()
+        elif (event.modifierFlags() & NSEventModifierFlagCommand and
+              (event.charactersIgnoringModifiers() or "") == "0"):
+            if self.delegate is not None:
+                self.delegate.gridDidAskToReset()
         elif self.delegate is not None and _is_typing(event):
             self.delegate.gridDidType_(event)
         else:
@@ -1613,6 +1650,28 @@ def strip_frame(visible, reserve, percent, height=None):
                       width, STRIP_H if height is None else height)
 
 
+COLUMN_CONTENT_W = CARD_W + 2 * MARGIN + 16   # one card, plus the scroller
+
+
+def column_frame(visible, reserve, percent, width=None):
+    """Where the vertical strip sits: down the LEFT edge, clear of the Dock,
+    `percent` of the usable height.
+
+    The mirror of strip_frame. There the height is dictated by the card and
+    the width is yours; here the WIDTH is dictated by the card and the
+    height is yours.
+    """
+    left, bottom, right = reserve
+    usable = visible.size.height - bottom
+    percent = max(20, min(100, int(percent)))
+    height = max(CARD_H + 120, usable * percent / 100.0)
+    height = min(height, usable - 2 * STRIP_EDGE)
+    return NSMakeRect(visible.origin.x + left + STRIP_EDGE,
+                      visible.origin.y + bottom + STRIP_EDGE,
+                      COLUMN_CONTENT_W if width is None else width,
+                      height)
+
+
 class HeaderView(NSView):
     """The strip holding the search field and the filter, drawn rather than
     left transparent so it reads as one bar and carries a divider.
@@ -1649,7 +1708,7 @@ SOURCE_ICON = 16                          # the source app badge on a card
 
 HINTS = ("click copy", "⌥click select", "⇧click range", "⌘click add",
          "↵ copy", "Space preview", "⌫ delete", "type to search",
-         "⌘/ help", "esc closes")
+         "⌘0 reset place", "⌘/ help", "esc closes")
 
 
 class HintView(NSView):
@@ -1699,16 +1758,33 @@ class PickerController(NSObject):
         self._build()
         return self
 
+    def layoutMode(self):
+        mode = pref(DEF_LAYOUT)
+        return mode if mode in ("grid", "strip", "column") else "strip"
+
     def isStrip(self):
-        return pref(DEF_LAYOUT) != "grid"
+        return self.layoutMode() == "strip"
+
+    def isColumn(self):
+        return self.layoutMode() == "column"
 
     def frameKey(self):
-        return DEF_STRIP_FRAME if self.isStrip() else DEF_PANEL_FRAME
+        # A frame per arrangement. Sharing one made switching layouts a
+        # fight: a column's tall narrow frame is nonsense for a strip.
+        if self.isStrip():
+            return DEF_STRIP_FRAME
+        if self.isColumn():
+            return DEF_COLUMN_FRAME
+        return DEF_PANEL_FRAME
 
     def _build(self):
-        strip = self.isStrip()
-        frame = NSMakeRect(0, 0, PANEL_W,
-                           STRIP_CONTENT_H if strip else PANEL_H)
+        strip, column = self.isStrip(), self.isColumn()
+        if strip:
+            frame = NSMakeRect(0, 0, PANEL_W, STRIP_CONTENT_H)
+        elif column:
+            frame = NSMakeRect(0, 0, COLUMN_CONTENT_W, PANEL_H)
+        else:
+            frame = NSMakeRect(0, 0, PANEL_W, PANEL_H)
         style = (NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
                  NSWindowStyleMaskResizable | NSWindowStyleMaskUtilityWindow)
         panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
@@ -1723,6 +1799,12 @@ class PickerController(NSObject):
             locked = STRIP_CONTENT_H + self._chrome_(panel)
             panel.setMinSize_(NSMakeSize(CARD_W + 2 * MARGIN + 40, locked))
             panel.setMaxSize_(NSMakeSize(100000, locked))
+        elif column:
+            # The mirror: the WIDTH is locked to one card, the height is
+            # yours to drag.
+            panel.setMinSize_(NSMakeSize(COLUMN_CONTENT_W,
+                                         CARD_H + 120 + self._chrome_(panel)))
+            panel.setMaxSize_(NSMakeSize(COLUMN_CONTENT_W, 100000))
         else:
             panel.setMinSize_(NSMakeSize(2 * CARD_W + 3 * GAP + 40, 320))
         # NSPanel's hidesOnDeactivate is YES by default.  For an accessory
@@ -1809,6 +1891,7 @@ class PickerController(NSObject):
         self.grid = GridView.alloc().initWithFrame_(
             NSMakeRect(0, 0, size.width, 400))
         self.grid.single_row = strip
+        self.grid.single_col = column
         self.grid.delegate = self
         self.scroll.setDocumentView_(self.grid)
 
@@ -1863,11 +1946,20 @@ class PickerController(NSObject):
                 # no longer exists.
                 frame.size.height = (STRIP_CONTENT_H
                                      + self._chrome_(self.panel))
+            elif self.isColumn():
+                # The mirror: one card wide, whatever height you dragged.
+                frame.size.width = COLUMN_CONTENT_W
             if self._frameIsVisible_(frame):
                 self.panel.setFrame_display_(frame, False)
                 return
+        self.parkAtDefault()
+
+    def parkAtDefault(self):
+        """The calculated home for whichever arrangement is in force."""
         if self.isStrip():
             self._parkAboveDock()
+        elif self.isColumn():
+            self._parkBesideDock()
         else:
             self._centerOnActiveScreen()
 
@@ -1935,6 +2027,31 @@ class PickerController(NSObject):
             strip_frame(screen.visibleFrame(), self._dockReserve_(screen),
                         pref(DEF_STRIP_PCT),
                         STRIP_CONTENT_H + self._chrome_(self.panel)), False)
+
+    def _parkBesideDock(self):
+        """Left edge, up from the Dock, a share of the screen tall."""
+        screen = self._activeScreen()
+        self.panel.setFrame_display_(
+            column_frame(screen.visibleFrame(), self._dockReserve_(screen),
+                         pref(DEF_STRIP_PCT), COLUMN_CONTENT_W), False)
+
+    def resetPosition_(self, sender):
+        """⌘0 — back to the calculated home, forgetting where it was dragged.
+
+        Dragging and resizing are remembered, which is what makes them
+        useful, and also what makes them a trap: a strip dragged half off a
+        screen that is no longer attached is remembered just as faithfully.
+        """
+        defaults().removeObjectForKey_(self.frameKey())
+        self.parkAtDefault()
+        self.grid.relayout()
+        self.status.setTextColor_(NSColor.secondaryLabelColor())
+        self.status.setStringValue_("Back to its usual place")
+        self.performSelector_withObject_afterDelay_(
+            "_clearStatus:", None, 2.0)
+
+    def _clearStatus_(self, ignored):
+        self._resetStatus()
 
     def _centerOnActiveScreen(self):
         visible = self._activeScreen().visibleFrame()
@@ -2230,6 +2347,9 @@ class PickerController(NSObject):
 
     def gridDidCancel(self):
         self.hide()
+
+    def gridDidAskToReset(self):
+        self.resetPosition_(None)
 
     def gridDidAskForHelp(self):
         self.app.showHelp()
@@ -2644,20 +2764,21 @@ class PrefsController(NSObject):
         view.addSubview_(_right_label("Layout:", row(1) + 5))
         self.layout_menu = NSPopUpButton.alloc().initWithFrame_pullsDown_(
             NSMakeRect(FIELD_X, row(1), 160, 26), False)
-        self.layout_menu.addItemsWithTitles_(["Strip", "Grid"])
+        self.layout_menu.addItemsWithTitles_(["Strip", "Column", "Grid"])
         self.layout_menu.setTarget_(self)
         self.layout_menu.setAction_("layoutChanged:")
         view.addSubview_(self.layout_menu)
         view.addSubview_(_plain("one row, above the Dock", FIELD_X + 168,
                                 row(1) + 5, 180))
 
-        view.addSubview_(_right_label("Strip width:", row(2) + 4))
+        view.addSubview_(_right_label("Strip size:", row(2) + 4))
         self.strip_pct = NSTextField.alloc().initWithFrame_(
             NSMakeRect(FIELD_X, row(2) + 2, 70, 22))
         self.strip_pct.setTarget_(self)
         self.strip_pct.setAction_("stripWidthChanged:")
         view.addSubview_(self.strip_pct)
-        view.addSubview_(_plain("% of the screen", FIELD_X + 78,
+        view.addSubview_(_plain("% of the screen (wide, or tall in a column)",
+                                FIELD_X + 78,
                                 row(2) + 4, 190))
 
         view.addSubview_(_right_label("Hotkey:", row(3) + 5))
@@ -2728,7 +2849,7 @@ class PrefsController(NSObject):
         self.capture_images.setState_(1 if pref(DEF_CAPTURE_IMAGES) else 0)
         self.login_item.setState_(1 if os.path.exists(AGENT_PLIST) else 0)
         self.layout_menu.selectItemAtIndex_(
-            0 if pref(DEF_LAYOUT) != "grid" else 1)
+            {"strip": 0, "column": 1, "grid": 2}.get(pref(DEF_LAYOUT), 0))
         self.card_menu.selectItemAtIndex_(
             {"large": 0, "medium": 1, "small": 2}.get(
                 str(pref(DEF_CARD_SIZE)), 0))
@@ -2780,11 +2901,12 @@ class PrefsController(NSObject):
         self.refresh()
 
     def layoutChanged_(self, sender):
-        chosen = "strip" if sender.indexOfSelectedItem() == 0 else "grid"
+        chosen = ("strip", "column", "grid")[
+            max(0, min(2, sender.indexOfSelectedItem()))]
         if chosen == pref(DEF_LAYOUT):
             return
         set_pref(DEF_LAYOUT, chosen)
-        # Strip and grid are different panels — different style limits,
+        # Each arrangement is a different panel — different style limits,
         # scrollers and row logic — so the picker is rebuilt rather than
         # reconfigured in place.
         self.app.rebuildPicker()

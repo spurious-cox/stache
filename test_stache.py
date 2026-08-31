@@ -730,6 +730,49 @@ def test_render():
     picker.grid.moveSelectionBy_(2)
     check("arrow selection moves", picker.grid.selectedItem() is not None)
 
+    # The vertical strip: one card wide, growing downwards, and the mirror
+    # of the horizontal one — there the height is locked, here the width is.
+    visible = stache.NSMakeRect(0, 0, 1800, 1000)
+    col = stache.column_frame(visible, (0, 70, 0), 60)
+    row = stache.strip_frame(visible, (0, 70, 0), 60)
+    check("a column is exactly one card wide",
+          abs(col.size.width - stache.COLUMN_CONTENT_W) < 0.5,
+          "%.0f vs %d" % (col.size.width, stache.COLUMN_CONTENT_W))
+    check("a column takes its share of the HEIGHT",
+          abs(col.size.height - (1000 - 70) * 0.6) < 1.0,
+          "%.0f" % col.size.height)
+    check("a strip takes its share of the WIDTH",
+          abs(row.size.width - 1800 * 0.6) < 1.0, "%.0f" % row.size.width)
+    check("both clear the Dock on the same edge",
+          col.origin.y >= 70 and row.origin.y >= 70,
+          "column y=%.0f strip y=%.0f" % (col.origin.y, row.origin.y))
+    check("a column is narrower than the strip is wide",
+          col.size.width < row.size.width)
+
+    grid = picker.grid
+    was_row, was_col = grid.single_row, grid.single_col
+    grid.single_row, grid.single_col = False, True
+    check("a column grid is one card per row", grid.columns() == 1)
+    if len(grid.items()) >= 2:
+        first, second = grid.cardRect_(0), grid.cardRect_(1)
+        check("cards stack downwards, not sideways",
+              abs(first.origin.x - second.origin.x) < 0.5
+              and second.origin.y > first.origin.y,
+              "x %.0f/%.0f  y %.0f/%.0f"
+              % (first.origin.x, second.origin.x,
+                 first.origin.y, second.origin.y))
+    grid.single_row, grid.single_col = was_row, was_col
+
+    # Each arrangement remembers its own frame; sharing one made a column's
+    # tall narrow frame get applied to a strip.
+    keys = set()
+    for mode in ("strip", "column", "grid"):
+        stache.set_pref(stache.DEF_LAYOUT, mode)
+        keys.add(picker.frameKey())
+    check("every arrangement has its own saved frame", len(keys) == 3,
+          str(sorted(keys)))
+    stache.set_pref(stache.DEF_LAYOUT, "strip")
+
     # Multiple selection: Shift extends from the anchor, Cmd toggles.
     picker.reload()
     grid = picker.grid

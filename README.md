@@ -23,7 +23,7 @@ postage-stamp of themselves — so the common recalls need no picker at all.
 Choose one and it goes on the clipboard. ⌘1–⌘9 pick them while the menu is
 open.
 
-The picker opens in one of two layouts:
+The picker opens in one of three layouts:
 
 * **Strip** (the default) — a single row of clippings across the bottom of
   the screen, sitting just above the Dock, anchored to the left edge and as
@@ -36,11 +36,16 @@ The picker opens in one of two layouts:
   taller, and the pointer is over it precisely when it is reaching for
   something sitting just above it). The reserve applies on whichever edge the
   Dock lives on.
+* **Column** — the strip stood on end: a single column of clippings up the
+  left edge of the screen, clear of the Dock, as tall a share of the screen
+  as you set. It scrolls vertically. One card wide, so the width is fixed
+  and the height is yours.
+
 * **Grid** — a centred window of rows and columns, for looking through the
   whole history rather than the last few.
 
-Both are set under Preferences; each remembers its own size and position, and
-either can be dragged anywhere you like.
+All three are set under Preferences, and each remembers its own size and
+position — see [Moving and sizing it](#moving-and-sizing-it).
 
 Each card is a picture with a caption top and bottom: the date and time of
 the capture above the thumbnail, the source app and size below it, and the
@@ -59,7 +64,8 @@ In the picker:
 | ⇧-click | extend the selection from the last card clicked |
 | ⌘-click | add or remove one card from the selection |
 | right-click | Copy · Open · Open With ▸ (any app, or Other…) · Reveal in Finder · Pin · Delete |
-| arrows | move the selection (in the strip, all four step along the row) |
+| arrows | move the selection (in a strip or column, all four step by one) |
+| ⌘0 | put the panel back where it calculated it belonged |
 | Return | copy the selected card |
 | Space | quick look — opens an image in Preview (text cards just copy) |
 | Delete | remove the selected clipping(s) for good — asks once for more than one |
@@ -80,6 +86,30 @@ immediately, but the panel then went quiet under the cursor while still on
 screen.
 
 Close it with the hotkey, with esc, or by clicking away.
+
+## Moving and sizing it
+
+**Drag the panel anywhere, resize it, and it stays there.** The frame is
+saved when the picker closes and restored the next time it opens, so the
+place and size you chose survive quitting, logging out and rebooting.
+
+One dimension is not yours to set, and which one depends on the layout. A
+**strip**'s height is dictated by the card, the header and the hint bar — a
+saved height from before the hint bar existed, or from a different card size,
+describes a strip that no longer exists — so only its width is remembered. A
+**column** is the mirror: its width is one card, and only its height is
+remembered. A **grid** remembers both.
+
+Each layout keeps its **own** saved frame, so switching between them does not
+drag one arrangement's shape onto another.
+
+**⌘0 puts it back** where it calculated it belonged — along the bottom above
+the Dock for a strip, up the left edge for a column, centred for a grid — and
+forgets where it had been dragged. Remembering the position is what makes
+dragging useful, and also what makes it a trap: a panel dragged onto a second
+display that is no longer attached is remembered just as faithfully as one
+dragged somewhere sensible. A frame that would land off-screen is ignored on
+open, but ⌘0 is the deliberate way back.
 
 Neither ⇧-click nor ⌘-click copies. Building a selection is not choosing from
 it — the point of selecting several is to delete them together.
@@ -149,9 +179,9 @@ From the menu bar item, or ⌘, while Stache is frontmost.
   that is too small for the card it now has to fill is quietly rebuilt from
   the full-resolution PNG the first time it is drawn, so older clippings look
   right at any size.
-* **Layout** — Strip or Grid.
-* **Strip width** — a percentage of the screen, from the left edge. 60% by
-  default.
+* **Layout** — Strip, Column or Grid.
+* **Strip size** — a percentage of the screen: how *wide* a strip is, how
+  *tall* a column is. 60% by default.
 * **Hotkey** — click the button, press the chord you want. At least one
   modifier is required: a bare key would be claimed system-wide and taken
   away from every other app.
