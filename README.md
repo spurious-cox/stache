@@ -2,6 +2,11 @@
 
 Clipboard history for macOS.
 
+### [⬇︎ Download the latest release](https://github.com/spurious-cox/stache/releases/latest)
+
+Notarized and stapled by Apple — open the DMG and drag Stache to
+Applications. No Gatekeeper warning, and no special permissions needed.
+
 The name is the joke: a *stache* is where you *stash* things, the two words
 sound identical, and this is where the clipboard gets stashed and recalled
 from. The moustaches on the icon are that pun made visible. A background agent records everything you copy —
