@@ -33,6 +33,10 @@ typing Cmd-V for you - synthesising a keystroke is the one thing here that
 would have demanded Accessibility.
 
 History:
+  1.12.1 The help window answers ⌘+, ⌘− and ⌘0. Its text was a fixed size,
+         which is a poor joke in a window that exists to be read. The body
+         is rebuilt at the new size rather than scaled as a view, so the
+         monospaced key names stay crisp, and the size is remembered.
   1.12.0 A COLUMN arrangement: the strip stood on end. One card wide,
          growing downwards, parked up the left edge clear of the Dock, and
          the exact mirror of the horizontal strip — there the height is
@@ -238,7 +242,7 @@ History:
   1.0.0  First release.
 """
 
-APP_VERSION = "1.12.0"
+APP_VERSION = "1.12.1"
 COPYRIGHT = "© 2026 Tim McCoy"
 APP_NAME = "Stache"
 BUNDLE_ID = "com.timmccoy.stache"
@@ -367,6 +371,7 @@ DEF_PANEL_FRAME = "StachePanelFrame"      # grid layout's saved frame
 DEF_STRIP_FRAME = "StacheStripFrame"      # strip layout's saved frame
 DEF_LAYOUT = "StacheLayout"               # "strip", "column" or "grid"
 DEF_COLUMN_FRAME = "StacheColumnFrame"    # column layout's saved frame
+DEF_HELP_SCALE = "StacheHelpTextScale"    # help window text size, x1.0
 DEF_STRIP_PCT = "StacheStripWidthPercent"  # strip width, % of the screen
 DEF_CARD_SIZE = "StacheCardSize"          # "small", "medium" or "large"
 
@@ -382,6 +387,7 @@ DEFAULTS = {
     DEF_CAPTURE_IMAGES: True,
     DEF_LAYOUT: "strip",
     DEF_STRIP_PCT: 60,
+    DEF_HELP_SCALE: 100,   # per cent, because prefs store ints cleanly
     DEF_CARD_SIZE: "large",
 }
 
@@ -2560,6 +2566,33 @@ def _human_bytes(n):
 # Help
 # ---------------------------------------------------------------------------
 
+class HelpTextView(NSTextView):
+    """The help text, which answers the zoom keys like a document would.
+
+    NSTextView only scales for a real text system; this is a read-only
+    display, so the keys are caught here and the body is rebuilt at the new
+    size instead. Rebuilding rather than applying a view-wide scale keeps
+    the monospaced key names crisp.
+    """
+
+    controller = None
+
+    def keyDown_(self, event):
+        if (event.modifierFlags() & NSEventModifierFlagCommand
+                and self.controller is not None):
+            char = (event.charactersIgnoringModifiers() or "")
+            if char in ("+", "="):
+                self.controller.zoomIn()
+                return
+            if char in ("-", "_"):
+                self.controller.zoomOut()
+                return
+            if char == "0":
+                self.controller.zoomReset()
+                return
+        objc.super(HelpTextView, self).keyDown_(event)
+
+
 HELP_INTRO = (
     "Stache keeps everything you copy — text and pictures alike — with the "
     "time you copied it and the app you copied it from, and hands any of it "
@@ -2607,6 +2640,8 @@ HELP_SECTIONS = (
                 "all until they are unpinned"),
         ("⇧click / ⌘click", "select a range, or add and remove one card at "
                             "a time; ⌫ then deletes all of them"),
+        ("⌘+ / ⌘− / ⌘0", "in this window: bigger text, smaller text, "
+                            "back to normal"),
         ("Preferences", "card size, layout, strip width, hotkey, how much "
                         "history to keep, open at login"),
         ("in the shell", "`stache` lists it, `stache copy 3` recalls it"),
@@ -2652,7 +2687,8 @@ class HelpController(NSObject):
         scroll.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
         scroll.setDrawsBackground_(True)
 
-        text = NSTextView.alloc().initWithFrame_(scroll.bounds())
+        text = HelpTextView.alloc().initWithFrame_(scroll.bounds())
+        text.controller = self
         text.setEditable_(False)
         text.setSelectable_(True)
         text.setAutoresizingMask_(NSViewWidthSizable)
@@ -2663,8 +2699,33 @@ class HelpController(NSObject):
         self.panel = panel
         self.text = text
 
+    def scale(self):
+        try:
+            return max(0.6, min(2.5, int(pref(DEF_HELP_SCALE)) / 100.0))
+        except (TypeError, ValueError):
+            return 1.0
+
+    def zoomIn(self):
+        self._setScale_(int(pref(DEF_HELP_SCALE)) + 10)
+
+    def zoomOut(self):
+        self._setScale_(int(pref(DEF_HELP_SCALE)) - 10)
+
+    def zoomReset(self):
+        self._setScale_(100)
+
+    def _setScale_(self, percent):
+        percent = max(60, min(250, int(percent)))
+        if percent == pref(DEF_HELP_SCALE):
+            return
+        set_pref(DEF_HELP_SCALE, percent)
+        # Rebuilt rather than scaled: every run carries its own font, and a
+        # view-wide scale factor would blur the monospaced key names.
+        self.text.textStorage().setAttributedString_(self._body())
+
     def _body(self):
         from Foundation import NSMutableAttributedString
+        z = self.scale()
         body = NSMutableAttributedString.alloc().init()
 
         def add(string, font, colour, space_after=0.0, indent=0.0):
@@ -2680,30 +2741,30 @@ class HelpController(NSObject):
                              NSParagraphStyleAttributeName: para}))
 
         add("Stache %s\n" % APP_VERSION,
-            NSFont.boldSystemFontOfSize_(22), NSColor.labelColor(), 4)
+            NSFont.boldSystemFontOfSize_(22 * z), NSColor.labelColor(), 4)
         add("clipboard history for macOS\n\n",
-            NSFont.systemFontOfSize_(13), NSColor.secondaryLabelColor(), 10)
+            NSFont.systemFontOfSize_(13 * z), NSColor.secondaryLabelColor(), 10)
         add(HELP_INTRO + "\n\n",
-            NSFont.systemFontOfSize_(13), NSColor.labelColor(), 14)
+            NSFont.systemFontOfSize_(13 * z), NSColor.labelColor(), 14)
 
         chord = hotkey_label(pref(DEF_HOTKEY_CODE), pref(DEF_HOTKEY_MODS))
         for heading, rows in HELP_SECTIONS:
             add(heading + "\n",
-                NSFont.boldSystemFontOfSize_(14), NSColor.labelColor(), 6)
+                NSFont.boldSystemFontOfSize_(14 * z), NSColor.labelColor(), 6)
             for key, meaning in rows:
                 add((key % chord if "%s" in key else key) + "\n",
-                    NSFont.monospacedSystemFontOfSize_weight_(12, 0.3),
+                    NSFont.monospacedSystemFontOfSize_weight_(12 * z, 0.3),
                     NSColor.labelColor(), 0, 0)
                 add(meaning + "\n",
-                    NSFont.systemFontOfSize_(12.5),
+                    NSFont.systemFontOfSize_(12.5 * z),
                     NSColor.secondaryLabelColor(), 8, 22)
-            add("\n", NSFont.systemFontOfSize_(6), NSColor.labelColor(), 6)
+            add("\n", NSFont.systemFontOfSize_(6 * z), NSColor.labelColor(), 6)
 
         add("Clippings live in ~/Library/Application Support/Stache — a "
             "SQLite index, and one ordinary PNG per picture. Nothing leaves "
             "this Mac.\n\n"
             "© 2026 Tim McCoy.",
-            NSFont.systemFontOfSize_(11.5), NSColor.tertiaryLabelColor())
+            NSFont.systemFontOfSize_(11.5 * z), NSColor.tertiaryLabelColor())
         return body
 
     def show(self):
