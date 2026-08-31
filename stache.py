@@ -33,6 +33,56 @@ typing Cmd-V for you - synthesising a keystroke is the one thing here that
 would have demanded Accessibility.
 
 History:
+  1.14.0 The name and copyright are back in column layout, as ordinary text
+         above the search field. The title bar could not hold them — at
+         230pt the traffic lights, version, centred name and copyright
+         overlapped into an unreadable pile, which is why 1.13.1 dropped
+         them — but the header has a row to spare.
+  1.13.3 The status line stopped being truncated — in the STRIP as well,
+         where it had been since 1.10.0 moved the search field right and
+         left it 155pt for 247pt of text, unnoticed because the end that
+         fell off was the least interesting. The reopen chord is now a
+         tooltip rather than something paid for on every view.
+  1.13.2 "2 visible" fits in a column. The status field was given whatever
+         was left after a fixed 132pt popup, which at the small card size —
+         a 230pt column — was 40pt, so the text truncated to "2". The popup
+         is now sized to its own title and the status takes the rest, and
+         the phrase drops its "of N", since the All chip beside it already
+         carries the total.
+  1.13.1 Chip counts stop moving when you type. They answered under the
+         search in force, so every number changed as the search narrowed —
+         which defeats the point of a number on a chip, which is to decide
+         where to look before you look. They now count what EXISTS, and how
+         many the search left is reported by the status line, which says
+         "2 visible of 6" rather than "2 of 6".
+
+         And the title bar drops the version and copyright in column
+         layout. At 312pt the traffic lights, version, centred name and
+         copyright overlapped into an unreadable pile.
+  1.13.0 The column header is two rows, so nothing is truncated. One row of
+         status, five chips and a search field needs about 700pt; a column
+         is around 270. The search field now spans the full width on top,
+         and below it the five kinds become a single popup carrying the same
+         counts, with the item count beside it and help on the right. The
+         longer status line — size on disk and the reopen chord — becomes a
+         tooltip there, since a truncated line says less than a short one.
+
+         An ellipsis opening the help was the other option and would have
+         cost the filters entirely in column layout.
+  1.12.5 A replaced picker is retired properly rather than merely hidden.
+         rebuildPicker ordered the old panel out but left the old controller
+         as its delegate and the window alive, so anything still holding
+         that controller could put it back on screen — which is how two
+         pickers, in two different layouts, can be up at once.
+  1.12.4 Opening Preferences or the help no longer dismisses the picker.
+         The panel hides when it loses key, which is what makes clicking
+         away dismiss it — but losing key to one of Stache's OWN windows is
+         not clicking away. The obvious fix, asking NSApp.keyWindow() which
+         window took over, does not work: at the moment a resign is
+         delivered the replacement may not be key yet, and it reads as
+         nothing at all. So the picker is TOLD to hold its ground, the same
+         flag an alert already sets, and the hold is released when that
+         window closes.
   1.12.3 Changing a preference no longer makes the picker disappear.
          rebuildPicker ordered the old panel out and built a replacement
          that nobody ever showed, so every change in Preferences looked like
@@ -260,7 +310,7 @@ History:
   1.0.0  First release.
 """
 
-APP_VERSION = "1.12.3"
+APP_VERSION = "1.14.1"
 COPYRIGHT = "© 2026 Tim McCoy"
 APP_NAME = "Stache"
 BUNDLE_ID = "com.timmccoy.stache"
@@ -1625,6 +1675,7 @@ HEADER_H = 44
 # bottom of every card until 1.3.0.  TITLE_H is only a starting guess — the
 # panel's real chrome is measured once it exists.
 HINT_H = 22                               # the key-hints bar under the cards
+COLUMN_HEADER_H = 98                      # name, search, then filter
 STRIP_CONTENT_H = HEADER_H + 2 * MARGIN + CARD_H + 18 + HINT_H
 TITLE_H = 24
 STRIP_H = STRIP_CONTENT_H + TITLE_H
@@ -1797,6 +1848,11 @@ class PickerController(NSObject):
     def isColumn(self):
         return self.layoutMode() == "column"
 
+    def headerHeight(self):
+        # A column is too narrow for one row of status, five chips and a
+        # search field — everything came out truncated. It gets two rows.
+        return COLUMN_HEADER_H if self.isColumn() else HEADER_H
+
     def frameKey(self):
         # A frame per arrangement. Sharing one made switching layouts a
         # fight: a column's tall narrow frame is nonsense for a strip.
@@ -1819,7 +1875,7 @@ class PickerController(NSObject):
         panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
             frame, style, NSBackingStoreBuffered, False)
         panel.setTitle_("Stache")
-        decorate_titlebar(panel)
+        decorate_titlebar(panel, compact=column)
         panel.setReleasedWhenClosed_(False)
         panel.setDelegate_(self)
         if strip:
@@ -1850,8 +1906,9 @@ class PickerController(NSObject):
         content = panel.contentView()
         size = content.bounds().size
 
+        header_h = self.headerHeight()
         header = HeaderView.alloc().initWithFrame_(
-            NSMakeRect(0, size.height - HEADER_H, size.width, HEADER_H))
+            NSMakeRect(0, size.height - header_h, size.width, header_h))
         header.setAutoresizingMask_(NSViewWidthSizable | NSViewMinYMargin)
         content.addSubview_(header)
         self.header = header
@@ -1865,13 +1922,23 @@ class PickerController(NSObject):
         self.search.setAutoresizingMask_(NSViewMinXMargin)
         header.addSubview_(self.search)
 
-        self.filter = NSSegmentedControl.alloc().initWithFrame_(
-            NSMakeRect(FILTER_X, 9, 380, 24))
-        self.filter.setSegmentCount_(len(FILTER_KINDS))
-        for i, (label, _kind) in enumerate(FILTER_KINDS):
-            self.filter.setLabel_forSegment_(label, i)
-        self.filter.setTrackingMode_(NSSegmentSwitchTrackingSelectOne)
-        self.filter.setSelectedSegment_(0)
+        # Five chips need about 380pt. A column has nowhere near that, so
+        # there it becomes one popup carrying the same five choices and the
+        # same counts.
+        self.compact_filter = column
+        if column:
+            self.filter = NSPopUpButton.alloc().initWithFrame_pullsDown_(
+                NSMakeRect(12, 10, 150, 24), False)
+            self.filter.addItemsWithTitles_([n for n, _ in FILTER_KINDS])
+            self.filter.selectItemAtIndex_(0)
+        else:
+            self.filter = NSSegmentedControl.alloc().initWithFrame_(
+                NSMakeRect(FILTER_X, 9, 380, 24))
+            self.filter.setSegmentCount_(len(FILTER_KINDS))
+            for i, (label, _kind) in enumerate(FILTER_KINDS):
+                self.filter.setLabel_forSegment_(label, i)
+            self.filter.setTrackingMode_(NSSegmentSwitchTrackingSelectOne)
+            self.selectKindIndex_(0)
         self.filter.setTarget_(self)
         self.filter.setAction_("filterChanged:")
         header.addSubview_(self.filter)
@@ -1894,6 +1961,20 @@ class PickerController(NSObject):
         self.status.setFont_(NSFont.systemFontOfSize_(11))
         self.status.setTextColor_(NSColor.secondaryLabelColor())
         header.addSubview_(self.status)
+        # In a column the title bar cannot hold the version and copyright
+        # beside a centred name — at 230pt they overlapped into a pile — so
+        # they are set as ordinary text above the search field instead.
+        self.brand = self.copyright = None
+        if column:
+            self.brand = _plain("Stache %s" % APP_VERSION, 12, 74, 140)
+            self.brand.setFont_(NSFont.boldSystemFontOfSize_(11))
+            self.brand.setTextColor_(NSColor.labelColor())
+            header.addSubview_(self.brand)
+            self.copyright = _plain(COPYRIGHT, 12, 74, 140)
+            self.copyright.setFont_(NSFont.systemFontOfSize_(10))
+            self.copyright.setAlignment_(2)              # right
+            header.addSubview_(self.copyright)
+
         header.controller = self
         self._layoutHeader()
 
@@ -1914,7 +1995,7 @@ class PickerController(NSObject):
 
         self.scroll = NSScrollView.alloc().initWithFrame_(
             NSMakeRect(0, hint_h, size.width,
-                       size.height - HEADER_H - hint_h))
+                       size.height - header_h - hint_h))
         self.scroll.setHasVerticalScroller_(not strip)
         self.scroll.setHasHorizontalScroller_(strip)
         self.scroll.setAutohidesScrollers_(True)
@@ -1977,7 +2058,7 @@ class PickerController(NSObject):
             self.search.setStringValue_(query)
         try:
             if 0 <= int(kind) < len(FILTER_KINDS):
-                self.filter.setSelectedSegment_(int(kind))
+                self.selectKindIndex_(int(kind))
         except (TypeError, ValueError):
             pass
         self.reload()
@@ -2144,10 +2225,33 @@ class PickerController(NSObject):
         # Click-away dismissal, but only once the panel has genuinely held
         # focus.  A resign that arrives before it ever became key is the
         # activation settling, not the user clicking somewhere else.
-        if (self.panel.isVisible() and getattr(self, "_was_key", False)
+        if not (self.panel.isVisible() and getattr(self, "_was_key", False)
                 and not getattr(self, "_modal", False)
                 and not getattr(self, "_yielding", False)):
-            self.hide()
+            return
+        # Losing key to one of OUR OWN windows — Preferences, the help — is
+        # not clicking away. Which window is taking over is not known yet at
+        # resign time, so the decision waits one turn of the run loop.
+        self.performSelector_withObject_afterDelay_("_hideUnlessOurs:",
+                                                    None, 0.0)
+
+    def _hideUnlessOurs_(self, ignored):
+        if not self.panel.isVisible():
+            return
+        # _modal is set while one of our own windows is up. Asking
+        # NSApp.keyWindow() instead looked obvious and is not reliable: at
+        # the moment a resign is delivered the replacement may not be key
+        # yet, and it reads as nothing at all.
+        if getattr(self, "_modal", False) or getattr(self, "_yielding", False):
+            return
+        self.hide()
+
+    def holdOpen(self):
+        """One of our own windows is taking focus — do not dismiss."""
+        self._modal = True
+
+    def releaseHold(self):
+        self._modal = False
 
     def windowWillClose_(self, note):
         self._restoreFocus()
@@ -2163,8 +2267,22 @@ class PickerController(NSObject):
     def hasQuery(self):
         return bool(self.search.stringValue())
 
+    def selectedKindIndex(self):
+        return (self.filter.indexOfSelectedItem()
+                if getattr(self, "compact_filter", False)
+                else self.filter.selectedSegment())
+
+    def selectKindIndex_(self, index):
+        index = int(index)
+        if not 0 <= index < len(FILTER_KINDS):
+            return
+        if getattr(self, "compact_filter", False):
+            self.filter.selectItemAtIndex_(index)
+        else:
+            self.filter.setSelectedSegment_(index)
+
     def currentKind(self):
-        index = self.filter.selectedSegment()
+        index = self.selectedKindIndex()
         if 0 <= index < len(FILTER_KINDS):
             return FILTER_KINDS[index][1]
         return None
@@ -2180,6 +2298,32 @@ class PickerController(NSObject):
         the status line takes whatever is left.
         """
         width = self.header.frame().size.width
+        if getattr(self, "compact_filter", False):
+            # Row one: the search field, full width. Row two: the filter and
+            # what is left of the status line, with help on the right.
+            if self.brand is not None:
+                self.brand.sizeToFit()
+                bw = min(self.brand.frame().size.width, width - 24)
+                self.brand.setFrame_(NSMakeRect(12, 74, bw, 16))
+                self.copyright.setFrame_(
+                    NSMakeRect(12 + bw + 6, 74,
+                               max(20, width - 24 - bw - 6), 16))
+            self.search.setFrame_(NSMakeRect(12, 42, max(80, width - 24), 26))
+            # Sized to its own title rather than a guessed 132: at the small
+            # card size the column is 230pt wide, and a fixed popup left the
+            # status line 40pt, which truncated "2 visible" to "2".
+            self.filter.sizeToFit()
+            # width-130 rather than width-96: at the small card size a
+            # 230pt column left the status 42pt for 43pt of text, which
+            # is the same truncation one cap looser.
+            menu_w = min(max(78.0, self.filter.frame().size.width),
+                         max(78.0, width - 130))
+            self.filter.setFrame_(NSMakeRect(12, 8, menu_w, 25))
+            self.help_button.setFrame_(NSMakeRect(width - 12 - 26, 9, 26, 24))
+            left = 12 + menu_w + 8
+            self.status.setFrame_(
+                NSMakeRect(left, 12, max(30, width - left - 46), 18))
+            return
         self.filter.sizeToFit()
         chips_w = self.filter.frame().size.width
         search_x = width - 12 - SEARCH_W
@@ -2200,20 +2344,33 @@ class PickerController(NSObject):
         self._refreshChips_(query)
         total = self.app.store.count()
         shown = len(items)
-        note = "%d of %d" % (shown, total) if shown != total else \
-            "%d item%s" % (total, "" if total == 1 else "s")
         self._resetStatus(shown, total)
 
     def _refreshChips_(self, query):
-        """Each chip says how many it would show — under the search in
-        force, so the numbers describe this list rather than the library."""
+        """Each chip says how many of that kind EXIST.
+
+        They used to answer under the search in force, which made every
+        number move as you typed — so a chip could not be used to decide
+        where to look, which is the only reason to put a number on it. How
+        many the search left is a different fact, and belongs in the status
+        line, which says so.
+        """
         try:
-            counts = self.app.store.counts(query)
+            counts = self.app.store.counts("")
         except Exception:
             return
-        for i, (label, kind) in enumerate(FILTER_KINDS):
-            self.filter.setLabel_forSegment_(
-                "%s (%d)" % (label, counts.get(kind or "all", 0)), i)
+        titles = ["%s (%d)" % (label, counts.get(kind or "all", 0))
+                  for label, kind in FILTER_KINDS]
+        if getattr(self, "compact_filter", False):
+            # Rebuilding the menu loses the selection, so it is put back.
+            chosen = self.filter.indexOfSelectedItem()
+            self.filter.removeAllItems()
+            self.filter.addItemsWithTitles_(titles)
+            if 0 <= chosen < len(titles):
+                self.filter.selectItemAtIndex_(chosen)
+        else:
+            for i, title in enumerate(titles):
+                self.filter.setLabel_forSegment_(title, i)
         self._layoutHeader()
 
     def _resetStatus(self, shown=None, total=None):
@@ -2221,13 +2378,24 @@ class PickerController(NSObject):
             total = self.app.store.count()
         if shown is None:
             shown = len(self.grid.items())
-        note = "%d of %d" % (shown, total) if shown != total else \
+        note = "%d visible of %d" % (shown, total) if shown != total else \
             "%d item%s" % (total, "" if total == 1 else "s")
         self.status.setTextColor_(NSColor.secondaryLabelColor())
-        self.status.setStringValue_(
-            "%s  ·  %s  ·  reopen with %s"
-            % (note, _human_bytes(self.app.store.disk_bytes()),
-               hotkey_label(pref(DEF_HOTKEY_CODE), pref(DEF_HOTKEY_MODS))))
+        full = ("%s  ·  %s  ·  reopen with %s"
+                % (note, _human_bytes(self.app.store.disk_bytes()),
+                   hotkey_label(pref(DEF_HOTKEY_CODE), pref(DEF_HOTKEY_MODS))))
+        # The reopen chord is a first-run nicety that was being paid for on
+        # every view: with it the line wants 247pt and even the strip only
+        # ever offered 155, so it had been silently truncated since the
+        # search field moved right. It lives in the tooltip and in the help.
+        if getattr(self, "compact_filter", False):
+            # "of N" goes too — the All chip beside it carries the total.
+            short = ("%d visible" % shown) if shown != total else note
+        else:
+            short = "%s  ·  %s" % (note,
+                                   _human_bytes(self.app.store.disk_bytes()))
+        self.status.setStringValue_(short)
+        self.status.setToolTip_(full)
 
     def showHelp_(self, sender):
         self.app.showHelp()
@@ -2525,7 +2693,7 @@ class PickerController(NSObject):
         unpinning = bool(self._menu_item.pinned)
         self.app.store.set_pinned(self._menu_item.id, not unpinning)
         if unpinning and self.currentKind() == "pinned":
-            self.filter.setSelectedSegment_(0)          # All
+            self.selectKindIndex_(0)                    # All
         self.reload()
 
     def menuDelete_(self, sender):
@@ -2670,6 +2838,8 @@ HELP_SECTIONS = (
         ("⌫", "delete the selected clipping for good"),
         ("right-click", "Copy · Open · Open With ▸ · Reveal in Finder · "
                         "Pin · Delete"),
+        ("⌘0", "put the picker back where it calculated it belonged, "
+                "forgetting where it was dragged"),
         ("esc", "close, clipboard untouched"),
     )),
     ("Finding one", (
@@ -2693,6 +2863,10 @@ HELP_SECTIONS = (
                             "a time; ⌫ then deletes all of them"),
         ("⌘+ / ⌘− / ⌘0", "in this window: bigger text, smaller text, "
                             "back to normal"),
+        ("Strip / Column / Grid",
+         "a row along the bottom, a column up the left edge, or a window of "
+         "rows. Drag any of them anywhere and resize them — the place is "
+         "remembered, and ⌘0 undoes it"),
         ("Preferences", "card size, layout, strip width, hotkey, how much "
                         "history to keep, open at login"),
         ("in the shell", "`stache` lists it, `stache copy 3` recalls it"),
@@ -2729,6 +2903,7 @@ class HelpController(NSObject):
             NSWindowStyleMaskResizable | NSWindowStyleMaskUtilityWindow,
             NSBackingStoreBuffered, False)
         panel.setTitle_("About Stache")
+        panel.setDelegate_(self)
         panel.setReleasedWhenClosed_(False)
         panel.setMinSize_(NSMakeSize(460, 360))
 
@@ -2749,6 +2924,11 @@ class HelpController(NSObject):
         panel.contentView().addSubview_(scroll)
         self.panel = panel
         self.text = text
+
+    def windowWillClose_(self, note):
+        picker = getattr(self.app, "picker", None) if self.app else None
+        if picker is not None:
+            picker.releaseHold()
 
     def scale(self):
         try:
@@ -2856,6 +3036,7 @@ class PrefsController(NSObject):
             NSWindowStyleMaskUtilityWindow,
             NSBackingStoreBuffered, False)
         panel.setTitle_("Stache Preferences")
+        panel.setDelegate_(self)
         panel.setReleasedWhenClosed_(False)
         view = panel.contentView()
 
@@ -3024,6 +3205,11 @@ class PrefsController(NSObject):
         self.app.rebuildPicker()
         self.refresh()
 
+    def windowWillClose_(self, note):
+        picker = getattr(self.app, "picker", None) if self.app else None
+        if picker is not None:
+            picker.releaseHold()
+
     def cardSizeChanged_(self, sender):
         chosen = ("large", "medium", "small")[sender.indexOfSelectedItem()]
         if chosen == pref(DEF_CARD_SIZE):
@@ -3124,7 +3310,7 @@ def _bar_label(text, align):
     return field
 
 
-def decorate_titlebar(window):
+def decorate_titlebar(window, compact=False):
     """Version on the left, name then icon in the centre, copyright right.
 
     Left and right are ordinary titlebar accessories.  The centre is NOT:
@@ -3134,8 +3320,14 @@ def decorate_titlebar(window):
     superview of the close button — kept centred by its margins rather than
     by a constraint.
     """
-    for text, attribute, align in (("v" + APP_VERSION, NSLayoutAttributeLeft, 0),
-                                   (COPYRIGHT, NSLayoutAttributeRight, 2)):
+    # In a column the window is about 312pt wide. The traffic lights, the
+    # version, the centred name and the copyright need well over that, and
+    # they overlapped into an unreadable pile. The identity — name and icon
+    # — is what earns the space; the version is in the help.
+    accessories = () if compact else (
+        ("v" + APP_VERSION, NSLayoutAttributeLeft, 0),
+        (COPYRIGHT, NSLayoutAttributeRight, 2))
+    for text, attribute, align in accessories:
         label = _bar_label(text, align)
         holder = NSView.alloc().initWithFrame_(
             NSMakeRect(0, 0, label.frame().size.width + 16, 22))
@@ -3521,8 +3713,15 @@ class StacheApp(NSObject):
         query, kind = "", 0
         if old is not None:
             query = str(old.search.stringValue() or "")
-            kind = old.filter.selectedSegment()
+            kind = old.selectedKindIndex()
+            # Retired properly, not merely hidden. orderOut_ alone leaves the
+            # old controller as the panel's delegate and leaves the window
+            # alive, so anything still holding that controller — a pending
+            # performSelector, a timer — can put it back on screen, and two
+            # pickers end up visible at once.
+            old.panel.setDelegate_(None)
             old.panel.orderOut_(None)
+            old.panel.close()
         self.picker = PickerController.alloc().initWithApp_(self)
         if was_visible:
             self.picker.reopenAfterRebuild_kind_(query, kind)
@@ -3542,9 +3741,16 @@ class StacheApp(NSObject):
         self.prefs.clearHistory_(sender)
 
     def menuPrefs_(self, sender):
+        # Opening Preferences takes key from the picker, and the picker
+        # dismisses itself when it loses key. Losing it to one of our own
+        # windows is not clicking away.
+        if self.picker is not None:
+            self.picker.holdOpen()
         self.prefs.show()
 
     def showHelp(self):
+        if self.picker is not None:
+            self.picker.holdOpen()
         self.help.show()
 
     def menuHelp_(self, sender):

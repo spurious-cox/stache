@@ -460,9 +460,15 @@ def test_render():
     store.add_text("mccoytest@cox.net", app="Mail")
 
     stache.apply_card_size()
+    # Whatever size is actually set — hard-coding "large" here meant the
+    # test only passed while that happened to be Tim's preference.
+    wanted = stache.CARD_SIZES.get(str(stache.pref(stache.DEF_CARD_SIZE)),
+                                   stache.CARD_SIZES["large"])
     check("card size preference drives the geometry",
-          (stache.CARD_W, stache.CARD_H) == stache.CARD_SIZES["large"],
-          "%dx%d" % (stache.CARD_W, stache.CARD_H))
+          (stache.CARD_W, stache.CARD_H) == wanted,
+          "%dx%d, preference says %s %dx%d"
+          % (stache.CARD_W, stache.CARD_H,
+             stache.pref(stache.DEF_CARD_SIZE), wanted[0], wanted[1]))
     check("the strip is tall enough for the card it holds",
           stache.STRIP_CONTENT_H >= stache.CARD_H + stache.HEADER_H,
           "content %d, card %d" % (stache.STRIP_CONTENT_H, stache.CARD_H))
@@ -523,9 +529,15 @@ def test_render():
               bool(data and data.writeToFile_atomically_(out, True)))
     check("grid holds every clipping", len(picker.grid.items()) == 6,
           str(len(picker.grid.items())))
-    check("status line reports the hotkey",
-          "Space" in str(picker.status.stringValue()),
+    # Since 1.13.3 the reopen chord is in the TOOLTIP, not the visible line:
+    # with it the line wanted 247pt and the strip only ever offered 155.
+    check("the status line fits what it shows",
+          "Space" not in str(picker.status.stringValue())
+          and "item" in str(picker.status.stringValue()),
           str(picker.status.stringValue()))
+    check("the hotkey is still reported, in the tooltip",
+          "Space" in str(picker.status.toolTip() or ""),
+          str(picker.status.toolTip()))
     image_item = [i for i in picker.grid.items() if i.kind == "image"][0]
     menu = picker.menuForItem_(image_item)
     titles = [str(menu.itemAtIndex_(i).title())
@@ -621,11 +633,16 @@ def test_render():
           % (picker.filter.frame().origin.x + picker.filter.frame().size.width,
              picker.help_button.frame().origin.x,
              picker.search.frame().origin.x))
+    # The filter is a segmented control in a strip or grid and a popup in a
+    # column, so the labels are read from whichever is in use.
+    if getattr(picker, "compact_filter", False):
+        titles = [str(picker.filter.itemTitleAtIndex_(i))
+                  for i in range(picker.filter.numberOfItems())]
+    else:
+        titles = [str(picker.filter.labelForSegment_(i))
+                  for i in range(picker.filter.segmentCount())]
     check("every chip carries a count",
-          all("(" in str(picker.filter.labelForSegment_(i))
-              for i in range(picker.filter.segmentCount())),
-          ", ".join(str(picker.filter.labelForSegment_(i))
-                    for i in range(picker.filter.segmentCount())))
+          bool(titles) and all("(" in t for t in titles), ", ".join(titles))
     # The selection must not drift onto the pinned card when the list is
     # rebuilt — that is what made ⌫ ask about the wrong clipping.
     store.set_pinned(picker.grid.items()[-1].id, True)
@@ -765,13 +782,16 @@ def test_render():
 
     # Each arrangement remembers its own frame; sharing one made a column's
     # tall narrow frame get applied to a strip.
+    # These tests change a real preference, so whatever was in force is put
+    # back. Leaving it set silently changed the running app's layout.
+    was_layout = stache.pref(stache.DEF_LAYOUT)
     keys = set()
     for mode in ("strip", "column", "grid"):
         stache.set_pref(stache.DEF_LAYOUT, mode)
         keys.add(picker.frameKey())
     check("every arrangement has its own saved frame", len(keys) == 3,
           str(sorted(keys)))
-    stache.set_pref(stache.DEF_LAYOUT, "strip")
+    stache.set_pref(stache.DEF_LAYOUT, was_layout)
 
     # Multiple selection: Shift extends from the anchor, Cmd toggles.
     picker.reload()
@@ -802,7 +822,7 @@ def test_render():
     picker.reload()
     victim = picker.grid.items()[0]
     store.set_pinned(victim.id, True)
-    picker.filter.setSelectedSegment_(
+    picker.selectKindIndex_(
         [k for _, k in stache.FILTER_KINDS].index("pinned"))
     picker.reload()
     check("the Pinned chip shows only the pinned clipping",

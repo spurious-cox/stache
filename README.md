@@ -41,6 +41,11 @@ The picker opens in one of three layouts:
   as you set. It scrolls vertically. One card wide, so the width is fixed
   and the height is yours.
 
+  Too narrow for the strip's single header row, so it gets three: the name
+  and copyright, then the search field, then the five kinds as a popup with
+  the item count and help beside it. The title bar carries only the name and
+  icon — at 230pt the version and copyright overlapped it into a pile.
+
 * **Grid** — a centred window of rows and columns, for looking through the
   whole history rather than the last few.
 
@@ -51,9 +56,12 @@ Each card is a picture with a caption top and bottom: the date and time of
 the capture above the thumbnail, the source app and size below it, and the
 thumbnail itself taking every point neither caption needs.
 
-A hint bar runs along the bottom of the picker the whole time it is open, so
-the keys are there without being remembered. **?** in the header — or ⌘/ —
-opens the full usage, including where the name comes from.
+A hint bar runs along the bottom of the strip and the grid the whole time
+they are open, so the keys are there without being remembered. A **column**
+has no room for it — the line is about 700pt wide and a column is around 270,
+so it could only ever appear truncated — and the keys live in the help
+instead. **?** in the header, or ⌘/, opens the full usage, including where
+the name comes from.
 
 In the picker:
 
@@ -117,8 +125,15 @@ it — the point of selecting several is to delete them together.
 The search field is at the far right of the header; the filter chips sit
 between it and the status line. Search covers the text of a clipping, the name
 of the app it came from, and the date it was captured — `safari` finds
-everything copied out of Safari. The chip counts follow the search, so they
-describe the list in front of you rather than the whole library.
+everything copied out of Safari.
+
+The chip counts say how many of each kind **exist**, and do not move as you
+type. A number that changed while you searched could not be used to decide
+where to look, which is the only reason to put one on a chip. How many the
+search left is a separate fact and the status line reports it — `2 visible of
+8`. In a column that shortens to `2 visible`, since the All chip beside it
+already carries the total, and the size on disk and the reopen chord move
+into its tooltip.
 
 A **URL** is a text clipping whose entire body is one link. It is worked out
 from the text rather than stored, so nothing had to be migrated, and a URL is
