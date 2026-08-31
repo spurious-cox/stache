@@ -33,6 +33,24 @@ typing Cmd-V for you - synthesising a keystroke is the one thing here that
 would have demanded Accessibility.
 
 History:
+  1.12.3 Changing a preference no longer makes the picker disappear.
+         rebuildPicker ordered the old panel out and built a replacement
+         that nobody ever showed, so every change in Preferences looked like
+         a crash — most convincingly in column layout, where Tim reported
+         exactly that. It now comes straight back, carrying the search text
+         and filter that were in force, so the change is visible as it is
+         made. It is ordered FRONT rather than made key: the change came
+         from the Preferences window and focus belongs there.
+  1.12.2 Two faults in the new column layout. Its WIDTH is derived from the
+         card size, and apply_card_size did not recompute it — so choosing a
+         smaller card left a 190px card sitting in a 312px column, since the
+         width kept whatever was in force at import.
+
+         And the hint bar is gone in column layout. It is one line about
+         700pt wide and a column is roughly 310, so it could only ever
+         appear truncated, which is worse than absent: a legend you cannot
+         read is furniture. The keys are all in the help (⌘/), and the space
+         goes to the cards.
   1.12.1 The help window answers ⌘+, ⌘− and ⌘0. Its text was a fixed size,
          which is a poor joke in a window that exists to be read. The body
          is rebuilt at the new size rather than scaled as a view, so the
@@ -242,7 +260,7 @@ History:
   1.0.0  First release.
 """
 
-APP_VERSION = "1.12.1"
+APP_VERSION = "1.12.3"
 COPYRIGHT = "© 2026 Tim McCoy"
 APP_NAME = "Stache"
 BUNDLE_ID = "com.timmccoy.stache"
@@ -1084,11 +1102,16 @@ def apply_card_size():
     recomputed rather than fixed at import time.  Everything that draws or
     places a card reads these at the moment it needs them."""
     global CARD_W, CARD_H, THUMB_BOX_H, STRIP_CONTENT_H, STRIP_H
+    global COLUMN_CONTENT_W
     CARD_W, CARD_H = CARD_SIZES.get(str(pref(DEF_CARD_SIZE)),
                                     CARD_SIZES["large"])
     THUMB_BOX_H = CARD_H - 2 * CARD_PAD - DATE_H - META_H - 6
     STRIP_CONTENT_H = HEADER_H + 2 * MARGIN + CARD_H + 18 + HINT_H
     STRIP_H = STRIP_CONTENT_H + TITLE_H
+    # The column's WIDTH hangs off the card exactly as the strip's height
+    # does. Left out of here, it kept the width of whatever card size was
+    # in force at import — a 190px card in a 312px column.
+    COLUMN_CONTENT_W = CARD_W + 2 * MARGIN + 16
 
 
 def _para(alignment=0, wrap=True):
@@ -1874,14 +1897,24 @@ class PickerController(NSObject):
         header.controller = self
         self._layoutHeader()
 
-        self.hints = HintView.alloc().initWithFrame_(
-            NSMakeRect(0, 0, size.width, HINT_H))
-        self.hints.setAutoresizingMask_(NSViewWidthSizable | 0x20)  # MaxYMargin
-        content.addSubview_(self.hints)
+        # The hint bar is one line of text about 700pt wide. A column is
+        # roughly 310pt, so it could only ever be shown truncated, which is
+        # worse than not showing it: a legend you cannot read is furniture.
+        # The keys are all still in the help, and in column layout the space
+        # goes to the cards instead.
+        hint_h = 0 if column else HINT_H
+        if hint_h:
+            self.hints = HintView.alloc().initWithFrame_(
+                NSMakeRect(0, 0, size.width, hint_h))
+            self.hints.setAutoresizingMask_(
+                NSViewWidthSizable | 0x20)      # MaxYMargin
+            content.addSubview_(self.hints)
+        else:
+            self.hints = None
 
         self.scroll = NSScrollView.alloc().initWithFrame_(
-            NSMakeRect(0, HINT_H, size.width,
-                       size.height - HEADER_H - HINT_H))
+            NSMakeRect(0, hint_h, size.width,
+                       size.height - HEADER_H - hint_h))
         self.scroll.setHasVerticalScroller_(not strip)
         self.scroll.setHasHorizontalScroller_(strip)
         self.scroll.setAutohidesScrollers_(True)
@@ -1932,6 +1965,24 @@ class PickerController(NSObject):
         self.panel.makeKeyAndOrderFront_(None)
         self.panel.makeFirstResponder_(self.grid)
         self._was_key = False
+
+    def reopenAfterRebuild_kind_(self, query, kind):
+        """Back on screen with the search and filter that were in force.
+
+        Ordered front rather than made key: the change came from the
+        Preferences window, and stealing focus back from what you are still
+        adjusting is its own kind of rude.
+        """
+        if query:
+            self.search.setStringValue_(query)
+        try:
+            if 0 <= int(kind) < len(FILTER_KINDS):
+                self.filter.setSelectedSegment_(int(kind))
+        except (TypeError, ValueError):
+            pass
+        self.reload()
+        self._restoreFrame()
+        self.panel.orderFront_(None)
 
     def _restoreFrame(self):
         """Put the panel back where it was, unless that is not somewhere it
@@ -3452,9 +3503,29 @@ class StacheApp(NSObject):
     # -- menu actions -----------------------------------------------------
 
     def rebuildPicker(self):
-        if self.picker is not None and self.picker.panel.isVisible():
-            self.picker.panel.orderOut_(None)
+        """Swap the picker for one built to the new preferences — and if it
+        was on screen, put it straight back, showing the change.
+
+        It used to just vanish: every preference change ordered the panel
+        out and built a replacement that nobody showed. In strip layout that
+        was survivable, since the strip sits out of the way; in a column it
+        looked exactly like a crash.
+
+        The old panel is NOT hidden through hide(), which would save its
+        frame — by this point the layout preference has already changed, so
+        the frame key has too, and a strip's geometry would be written into
+        the column's slot.
+        """
+        old = self.picker
+        was_visible = old is not None and old.panel.isVisible()
+        query, kind = "", 0
+        if old is not None:
+            query = str(old.search.stringValue() or "")
+            kind = old.filter.selectedSegment()
+            old.panel.orderOut_(None)
         self.picker = PickerController.alloc().initWithApp_(self)
+        if was_visible:
+            self.picker.reopenAfterRebuild_kind_(query, kind)
 
     def menuOpen_(self, sender):
         self.picker.show()
