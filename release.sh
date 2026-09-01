@@ -1,5 +1,11 @@
 #!/bin/zsh
-# Notarize Stache.app and wrap it in a distributable DMG — v1.0.0
+# Notarize Stache.app and wrap it in a distributable DMG — v1.1.0
+#
+# v1.1.0 also puts a "READ ME FIRST.txt" in the DMG and rewrites the Homebrew
+# cask's version and sha256. The readme exists because replacing a RUNNING
+# Stache silently fails: another Mac ran 1.9.0 through three installs of
+# 1.17.1 because the old copy was still alive and the login agent kept
+# restarting it.
 #
 # Run ./build.sh first; this takes dist/Stache.app as it finds it.
 #
@@ -62,6 +68,46 @@ rm -rf dist/dmg "$DMG"
 mkdir -p dist/dmg
 cp -R "$APP" dist/dmg/
 ln -s /Applications dist/dmg/Applications
+# A plain-text note beside the app. Named so it sorts first and reads as an
+# instruction rather than documentation nobody opens. Deb's Mac ran 1.9.0
+# through three installs of 1.17.1 because the old copy was still running.
+cat > "dist/dmg/READ ME FIRST.txt" <<READMEEOF
+Stache $VERSION
+
+INSTALLING
+    Drag Stache onto the Applications folder beside it.
+
+UPDATING - QUIT THE OLD ONE FIRST
+    If Stache is already installed and running, quit it before you copy:
+
+        menu bar S  ->  Quit
+
+    Replacing an app while it is running is unreliable. Stache also installs
+    a login agent that restarts it if it stops unexpectedly, so FORCE
+    QUITTING is not enough - that counts as a crash and the old copy comes
+    straight back, and the new version appears not to install at all.
+
+    Quitting properly is enough. The agent does not relaunch after a clean
+    quit.
+
+    To check which version is actually running afterwards:
+        menu bar S  ->  About Stache
+
+OPENING IT
+    Hold Control and Open the first time if macOS asks - though it should
+    not: this app is signed and notarized by Apple.
+
+    Stache needs no special permissions. The hotkey is a Carbon hot key,
+    which the window server delivers without Accessibility.
+
+HOMEBREW
+    brew install --cask spurious-cox/tap/stache
+
+    Installed that way, upgrades stop the agent and quit the app for you.
+
+https://github.com/spurious-cox/stache
+(c) 2026 Tim McCoy
+READMEEOF
 # hdiutil intermittently returns "Resource busy" on a folder that was
 # written seconds earlier — something (Spotlight, on-access AV) still has it
 # open. It clears on its own, so retry rather than abandoning a build whose
@@ -92,6 +138,27 @@ rm -rf /Applications/Stache.app
 cp -R "$APP" /Applications/
 xattr -dr com.apple.quarantine /Applications/Stache.app 2>/dev/null || true
 agent_start
+
+echo "==> updating the Homebrew cask"
+TAP="$(brew --repository 2>/dev/null)/Library/Taps/spurious-cox/homebrew-tap"
+CASK="$TAP/Casks/stache.rb"
+if [[ -f "$CASK" ]]; then
+    SHA=$(shasum -a 256 "$DMG" | cut -d" " -f1)
+    # Only the two lines that change per release. Rewriting the whole file
+    # from a template would lose the caveats and zap list.
+    /usr/bin/sed -i "" \
+        -e "s/^  version \".*\"/  version \"$VERSION\"/" \
+        -e "s/^  sha256 \".*\"/  sha256 \"$SHA\"/" "$CASK"
+    echo "    $CASK -> $VERSION"
+    echo "    sha256 $SHA"
+    if brew style --cask "$CASK" >/dev/null 2>&1; then
+        echo "    style: ok — commit and push the tap to publish it"
+    else
+        echo "    style: FAILED — check $CASK by hand" >&2
+    fi
+else
+    echo "    no cask at $CASK — skipped"
+fi
 
 echo "==> results"
 echo "    dmg:      $DMG  ($(du -h "$DMG" | cut -f1))"
