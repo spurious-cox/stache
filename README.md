@@ -127,7 +127,7 @@ add after it, in the order you made them — the built-in filters never move.
 Selecting your filter and typing searches **within** it. To remove one: empty
 the field, select the filter, ⌘⇧F again — the clippings stay.
 
-Every filter but the first carries a count of what it holds, exact and
+Every filter but **[ ALL ]** carries a count of what it holds, exact and
 unaffected by what you type — how many the search left is in the status line
 instead. **[ ALL ] shows no number**: counting the hidden clippings would
 contradict the list under it, and leaving them out would not be all.

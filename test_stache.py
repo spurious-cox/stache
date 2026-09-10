@@ -881,7 +881,7 @@ def test_render():
     else:
         titles = [str(picker.filter.labelForSegment_(i))
                   for i in range(picker.filter.segmentCount())]
-    check("every filter but the first carries a count",
+    check("every filter but [ ALL ] carries a count",
           bool(titles) and all("(" in t for t in titles[1:]), ", ".join(titles))
     check("and [ ALL ] carries none — no count it could show would be right",
           titles[0] == "[ ALL ]", titles[0])
