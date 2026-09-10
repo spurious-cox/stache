@@ -437,7 +437,7 @@ class FakeApp(object):
 
 
 def test_saved_filters():
-    """A saved search behaves like a built-in chip, in both directions."""
+    """A saved search behaves like a built-in filter, in both directions."""
     print("saved filters")
     store = stache.Store(os.path.join(SCRATCH, "filters.sqlite3"))
     now = time.time()
@@ -447,7 +447,7 @@ def test_saved_filters():
         store.add_text(body, app)
     kinds = [None, ("search", "hello"), "url"]
     counts = store.counts("", kinds)
-    check("a saved search counts like a chip",
+    check("a saved search counts like a filter",
           counts[("search", "hello")] == 2, str(counts))
     check("and the built-ins still count beside it",
           counts["all"] == 3 and counts["url"] == 1, str(counts))
@@ -466,23 +466,23 @@ def test_saved_filters():
     check("a saved filter survives the round trip through preferences",
           names == ["Recipes"], str(names))
     # Asked against the app's own built-ins rather than a list written out
-    # here, so adding a chip (Notes did) does not fail this for the wrong
+    # here, so adding a filter (Notes did) does not fail this for the wrong
     # reason.
     built_in = [label for label, _kind in stache.FILTER_KINDS]
     labels = [label for label, _kind in stache.filter_list()]
-    check("and it appears after the built-in chips",
+    check("and it appears after the built-in filters",
           labels[:len(built_in)] == built_in and labels[-1] == "Recipes",
           str(labels))
-    # The chips are chosen by room, not by count: the first saved filter used
+    # The filters are chosen by room, not by count: the first saved filter used
     # to tip a two-thousand-point strip into the popup.
     with_one = stache.filter_list()
-    check("eight chips still fit a wide strip",
-          stache.chips_fit(2204, with_one), "2204pt")
+    check("eight filters still fit a wide strip",
+          stache.filters_fit(2204, with_one), "2204pt")
     check("and a column still gets the popup",
-          not stache.chips_fit(stache.COLUMN_CONTENT_W, with_one),
+          not stache.filters_fit(stache.COLUMN_CONTENT_W, with_one),
           "%dpt" % stache.COLUMN_CONTENT_W)
     check("a long name is allowed for at its longest",
-          not stache.chips_fit(820, with_one + [("a very long filter name", "x")]),
+          not stache.filters_fit(820, with_one + [("a very long filter name", "x")]),
           "820pt")
 
     stache.set_saved_filters([])
@@ -500,7 +500,7 @@ def test_notes():
     note = store.get(note_id)
     check("it is its own kind", note.kind == "note", note.kind)
     check("and says where it came from", note.app == "Note", note.app)
-    check("the Notes chip finds it",
+    check("the Notes filter finds it",
           [i.id for i in store.items(kind="note")] == [note_id], "one note")
     check("it is not counted as a text clipping",
           store.items(kind="text") == [], "expected none")
@@ -532,7 +532,7 @@ def test_notes():
 
 
 def test_hidden():
-    """Hiding a clipping seals it; nothing outside its own chip sees it."""
+    """Hiding a clipping seals it; nothing outside its own filter sees it."""
     print("hidden")
     vault = stache.Vault(os.path.join(SCRATCH, "vault.key"))
     store = stache.Store(os.path.join(SCRATCH, "hidden.sqlite3"), vault=vault)
@@ -567,7 +567,7 @@ def test_hidden():
           store.items(query="swordfish") == [], "nothing found")
     check("gone from the count the status line reads",
           store.count() == 1, str(store.count()))
-    check("but the Hidden chip finds it",
+    check("but the Hidden filter finds it",
           len(store.items(kind="hidden")) == 1, "one")
     sealed = store.items(kind="hidden")[0]
     check("and what it holds is still sealed until asked",
@@ -652,14 +652,14 @@ def test_order():
     check("and it does not stay there once something newer is pinned",
           (store.set_pinned(ids[1], True) or store.items()[0].id) == ids[1],
           str(store.items()[0].id))
-    check("the Pinned chip is newest-pinned first",
+    check("the Pinned filter is newest-pinned first",
           [i.id for i in store.items(kind="pinned")] == [ids[1], ids[0]],
           str([i.id for i in store.items(kind="pinned")]))
 
     store.hide([ids[2]])
     time.sleep(0.02)
     store.hide([ids[3]])
-    check("the Hidden chip is newest-hidden first",
+    check("the Hidden filter is newest-hidden first",
           [i.id for i in store.items(kind="hidden")] == [ids[3], ids[2]],
           str([i.id for i in store.items(kind="hidden")]))
     check("and hidden clippings are still absent from All",
@@ -845,22 +845,22 @@ def test_render():
     check("the message names what was copied",
           ("that image" if picked.kind == "image" else "“") in said, said)
     # 1.10.0 moved the search field to the far right, so the status line now
-    # starts at the left edge and the chips sit between the two.
+    # starts at the left edge and the filters sit between the two.
     # The panel is created at a placeholder 820pt and only takes its real
-    # width afterwards, so the chips must be decided on the planned width.
+    # width afterwards, so the filters must be decided on the planned width.
     check("the filter is decided by the width the panel will have",
           picker.plannedWidth() >= 1000,
           "built at %.0f, planned %.0f"
           % (picker.panel.contentView().bounds().size.width,
              picker.plannedWidth()))
-    check("so a wide strip keeps its chips",
+    check("so a wide strip keeps its filters",
           not picker.compact_filter, "compact=%s" % picker.compact_filter)
-    check("the status line is left of the filter chips",
+    check("the status line is left of the filters",
           picker.status.frame().origin.x < picker.filter.frame().origin.x
           and (picker.status.frame().origin.x
                + picker.status.frame().size.width
                <= picker.filter.frame().origin.x + 1),
-          "status %.0f..%.0f, chips start at %.0f"
+          "status %.0f..%.0f, filters start at %.0f"
           % (picker.status.frame().origin.x,
              picker.status.frame().origin.x + picker.status.frame().size.width,
              picker.filter.frame().origin.x))
@@ -869,7 +869,7 @@ def test_render():
           > picker.filter.frame().origin.x + picker.filter.frame().size.width
           and picker.search.frame().origin.x
           > picker.help_button.frame().origin.x,
-          "chips end %.0f, help %.0f, search %.0f"
+          "filters end %.0f, help %.0f, search %.0f"
           % (picker.filter.frame().origin.x + picker.filter.frame().size.width,
              picker.help_button.frame().origin.x,
              picker.search.frame().origin.x))
@@ -881,7 +881,7 @@ def test_render():
     else:
         titles = [str(picker.filter.labelForSegment_(i))
                   for i in range(picker.filter.segmentCount())]
-    check("every chip carries a count",
+    check("every filter carries a count",
           bool(titles) and all("(" in t for t in titles), ", ".join(titles))
     # The selection must not drift onto the pinned card when the list is
     # rebuilt — that is what made ⌫ ask about the wrong clipping.
@@ -1120,7 +1120,7 @@ def test_render():
           grid.selectedItem() is None and grid.selectedItems() == [],
           "selected=%s" % grid.selectedItem())
 
-    # Unpinning under the Pinned chip keeps the card in sight: the filter
+    # Unpinning under the Pinned filter keeps the card in sight: the filter
     # falls back to All and the selection stays on the same clipping.
     picker.reload()
     # Pin exactly one, having cleared the rest: this used to rely on the
@@ -1135,13 +1135,13 @@ def test_render():
     picker.selectKindIndex_(
         [k for _, k in stache.FILTER_KINDS].index("pinned"))
     picker.reload()
-    check("the Pinned chip shows only the pinned clipping",
+    check("the Pinned filter shows only the pinned clipping",
           [i.id for i in picker.grid.items()] == [victim.id],
           "%d shown" % len(picker.grid.items()))
     picker.grid._selectOnly_(0)
     picker._menu_item = picker.grid.items()[0]
     picker.menuPin_(None)
-    check("unpinning under the Pinned chip falls back to All",
+    check("unpinning under the Pinned filter falls back to All",
           picker.currentKind() is None, str(picker.currentKind()))
     check("and the unpinned clipping is still the selected one",
           picker.grid.selectedItem() is not None

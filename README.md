@@ -23,12 +23,12 @@ The name is the joke: a *stache* is where you *stash* things.
 ## New in 2
 
 * **Notes** — reference text you type, kept as a clipping (⌘N).
-* **Filters made on the fly** — a search you like becomes a chip of its
+* **Filters made on the fly** — a search you like becomes a filter of its
   own, appended after the built-in ones (⌘⇧F).
 * **Hidden clippings** — sealed out of every list, behind Touch ID (⌘H).
 * **Newest first, everywhere.** Pinned clippings no longer jump the queue, so
   the picker opens on what you just copied. Pinning or hiding one counts as
-  activity, so it goes to the front of its own chip.
+  activity, so it goes to the front of its own list.
 * **The menu bar menu no longer lists clippings.** It opens with one click and
   no authentication, which is the wrong place for the history now that
   clippings can be hidden.
@@ -66,11 +66,11 @@ Three layouts, set in Preferences, each remembering its own size and place:
 | type anything | jumps into the search field |
 | ⌘0 | put the panel back where it belongs |
 | ⌘N | write a note |
-| ⌘H | hide the selection — or reveal it, under the Hidden chip |
-| ⌘⇧F | keep the current search as a chip, or remove the chip you are on |
+| ⌘H | hide the selection — or reveal it, under the Hidden filter |
+| ⌘⇧F | keep the current search as a filter, or remove the filter you are on |
 | ⌘/ | the full help |
 | Esc | close, clipboard untouched |
-| All / Pinned / Notes / Images / Text / URL / Hidden | the seven built-in chips, each carrying its count |
+| All / Pinned / Notes / Images / Text / URL / Hidden | the seven built-in filters, each carrying its count |
 
 Picking does not close the picker and does not hand back the keyboard, so the
 sequence is **pick, Esc, ⌘V**.
@@ -117,17 +117,17 @@ expiry countdown.
 
 ## Filters made on the fly
 
-Seven chips are built in and always present, in this order:
+Seven filters are built in and always present, in this order:
 
     All · Pinned · Notes · Images · Text · URL · Hidden
 
-⌘⇧F keeps whatever is in the search field as a chip of its own, under a name
+⌘⇧F keeps whatever is in the search field as a filter of its own, under a name
 you choose. **It is appended after those seven**, and so is every filter you
-add after it, in the order you made them — the built-in chips never move.
-Selecting your chip and typing searches **within** it. To remove one: empty
-the field, select the chip, ⌘⇧F again — the clippings stay.
+add after it, in the order you made them — the built-in filters never move.
+Selecting your filter and typing searches **within** it. To remove one: empty
+the field, select the filter, ⌘⇧F again — the clippings stay.
 
-Saved filters live in preferences, not the database. When the chips no longer
+Saved filters live in preferences, not the database. When the filters no longer
 fit the width of the panel, the whole row becomes a popup menu carrying the
 same choices and counts — the room decides, not the number, so a wide strip
 holds far more of them than a column.
@@ -135,7 +135,7 @@ holds far more of them than a column.
 ## Hidden clippings
 
 ⌘H seals the selection. Hidden clippings leave every list, every count and
-every search — absent, not greyed out. The **Hidden** chip shows them after
+every search — absent, not greyed out. The **Hidden** filter shows them after
 Touch ID, and locks again when the picker closes. ⌘H there puts them back.
 
 Sealed means the body, the preview and any image are encrypted (AES-256-CBC

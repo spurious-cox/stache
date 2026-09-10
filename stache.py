@@ -121,7 +121,7 @@ History:
          the front and its retention clock restarts, and the card shows
          "edited" beside the date rather than claiming to be a verbatim
          capture.
-  1.14.1 Documentation made true. The README claimed chip counts follow the
+  1.14.1 Documentation made true. The README claimed filter counts follow the
          search and that the hint bar is always present, both false since
          1.13, and the in-app help had never mentioned Cmd-0 or the three
          layouts. The test suite stopped leaving DEF_LAYOUT set, which had
@@ -142,11 +142,11 @@ History:
          was left after a fixed 132pt popup, which at the small card size —
          a 230pt column — was 40pt, so the text truncated to "2". The popup
          is now sized to its own title and the status takes the rest, and
-         the phrase drops its "of N", since the All chip beside it already
+         the phrase drops its "of N", since the All filter beside it already
          carries the total.
-  1.13.1 Chip counts stop moving when you type. They answered under the
+  1.13.1 Filter counts stop moving when you type. They answered under the
          search in force, so every number changed as the search narrowed —
-         which defeats the point of a number on a chip, which is to decide
+         which defeats the point of a number on a filter, which is to decide
          where to look before you look. They now count what EXISTS, and how
          many the search left is reported by the status line, which says
          "2 visible of 6" rather than "2 of 6".
@@ -155,7 +155,7 @@ History:
          layout. At 312pt the traffic lights, version, centred name and
          copyright overlapped into an unreadable pile.
   1.13.0 The column header is two rows, so nothing is truncated. One row of
-         status, five chips and a search field needs about 700pt; a column
+         status, five filters and a search field needs about 700pt; a column
          is around 270. The search field now spans the full width on top,
          and below it the five kinds become a single popup carrying the same
          counts, with the item count beside it and help on the right. The
@@ -222,10 +222,10 @@ History:
   1.11.2 Delete is the default button on the batch confirmation.  Return now
          deletes; Escape still cancels.
   1.11.1 Unpinning no longer loses the card.  It re-sorts out of the front
-         the instant it is unpinned, and under the Pinned chip it left the
+         the instant it is unpinned, and under the Pinned filter it left the
          list entirely - at which point the selection fell back to card 0
          without saying so, and the next ⌫ deleted a clipping nobody had
-         chosen.  Unpinning under that chip now switches to All, the
+         chosen.  Unpinning under that filter now switches to All, the
          selection is scrolled into view after every rebuild, and a
          selection whose clipping is gone becomes NO selection rather than
          a different one.
@@ -250,13 +250,13 @@ History:
          to wake it.  Focus stays until the picker closes, and closing still
          restores it, so the sequence is pick, Esc, Cmd-V.
 
-         The filter is five chips carrying their own counts - All, Pinned,
+         The filter is five filters carrying their own counts - All, Pinned,
          Images, Text, URL - and the search field has moved to the far
          right.  URL is derived in SQL rather than stored (a text clipping
          whose whole body is one link), so there is no schema change and
          nothing to migrate; a URL is NOT also counted as text, so the four
          kinds sum to the total.  The header now lays itself out by
-         measurement: the chips are as wide as their labels, which changes
+         measurement: the filters are as wide as their labels, which changes
          with the counts, and fixed columns collided in the 820pt grid.
 
          Title bar carries the version on the left, the name and icon in
@@ -405,7 +405,7 @@ History:
   1.0.0  First release.
 """
 
-APP_VERSION = "2.3.2"
+APP_VERSION = "2.3.3"
 COPYRIGHT = "© 2026 Tim McCoy"
 APP_NAME = "Stache"
 BUNDLE_ID = "com.timmccoy.stache"
@@ -1057,7 +1057,7 @@ class Store(object):
 
     def _search_clause(self, query):
         """The text/date search, as (sql, args). Shared by items() and
-        counts() so a chip's number always describes the list the same
+        counts() so a filter's number always describes the list the same
         search would produce."""
         if not query:
             return None, []
@@ -1078,10 +1078,10 @@ class Store(object):
                       "hidden")
 
     def counts(self, query="", kinds=None):
-        """How many clippings each chip would show, under this search.
+        """How many clippings each filter would show, under this search.
 
         `kinds` is whatever the picker is showing — the built-ins, plus any
-        saved searches the user has made into chips. Keys in the answer are
+        saved searches the user has made into filters. Keys in the answer are
         the kind itself for a built-in and the ("search", query) tuple for a
         saved one, so the caller can look up either without a second rule.
         """
@@ -1126,7 +1126,7 @@ class Store(object):
         # Newest first, full stop. Pinned clippings used to be forced to the
         # front of every list, which meant the picker did not open on the
         # thing just copied — the whole point of opening it. A pinned or
-        # hidden clipping still reaches the front of its own chip, because
+        # hidden clipping still reaches the front of its own filter, because
         # pinning and hiding set `changed` and that is what is sorted on.
         sql += " ORDER BY COALESCE(changed, used, created) DESC LIMIT ?"
         args.append(limit)
@@ -2451,7 +2451,7 @@ class HeaderView(NSView):
     """The strip holding the search field and the filter, drawn rather than
     left transparent so it reads as one bar and carries a divider.
 
-    It also owns re-laying its contents out: the chips are sized to labels
+    It also owns re-laying its contents out: the filters are sized to labels
     that change with the counts, so the positions cannot be expressed as
     autoresizing masks.
     """
@@ -2470,23 +2470,23 @@ class HeaderView(NSView):
         NSBezierPath.fillRect_(NSMakeRect(0, 0, self.bounds().size.width, 1))
 
 
-# The filter chips, in the order they appear. "All" stays: without it the
-# only way back to the whole list is to deselect a chip, and a segmented
+# The filters, in the order they appear. "All" stays: without it the
+# only way back to the whole list is to deselect a filter, and a segmented
 # control in select-one mode will not deselect.
 FILTER_KINDS = (("All", None), ("Pinned", "pinned"), ("Notes", "note"),
                 ("Images", "image"), ("Text", "text"), ("URL", "url"),
                 ("Hidden", "hidden"))
 
-def chips_fit(width, filters):
-    """Would these chips fit the header at this width?
+def filters_fit(width, filters):
+    """Would these filters fit the header at this width?
 
     Counting them was the wrong test. It was written when there were five
     built-ins and a limit of seven, so the FIRST saved filter tipped a strip
-    two thousand points wide into the popup — plenty of room, no chips. What
+    two thousand points wide into the popup — plenty of room, no filters. What
     matters is the room, so that is what is measured.
 
     Each label is allowed for at its longest: the count beside it is not
-    known until the clippings are read, and a chip that fits empty and not
+    known until the clippings are read, and a filter that fits empty and not
     at "(128)" would be worse than one that never appeared.
     """
     room = width - (12 + 90 + 12 + 34 + SEARCH_W + 12)
@@ -2495,7 +2495,7 @@ def chips_fit(width, filters):
 
 
 def saved_filters():
-    """The searches the user has promoted to chips, oldest first.
+    """The searches the user has promoted to filters, oldest first.
 
     Kept in preferences rather than the database: a filter is a question
     about the clippings, not one of them, and storing it here means no
@@ -2517,7 +2517,7 @@ def set_saved_filters(pairs):
 
 
 def filter_list():
-    """Every chip the picker should show: the built-ins, then the saved ones.
+    """Every filter the picker should show: the built-ins, then the saved ones.
 
     Same shape throughout — (label, kind) — so nothing downstream needs to
     know which of the two it is holding.
@@ -2525,7 +2525,7 @@ def filter_list():
     return list(FILTER_KINDS) + [(name, ("search", query))
                                  for name, query in saved_filters()]
 SEARCH_W = 220                            # the search field, pinned right
-FILTER_X = 300                            # where the chips start, when there
+FILTER_X = 300                            # where the filters start, when there
                                           # is room for them there
 
 SOURCE_ICON = 16                          # the source app badge on a card
@@ -2595,7 +2595,7 @@ class PickerController(NSObject):
         return self.layoutMode() == "column"
 
     def headerHeight(self):
-        # A column is too narrow for one row of status, five chips and a
+        # A column is too narrow for one row of status, five filters and a
         # search field — everything came out truncated. It gets two rows.
         return COLUMN_HEADER_H if self.isColumn() else HEADER_H
 
@@ -2668,18 +2668,18 @@ class PickerController(NSObject):
         self.search.setAutoresizingMask_(NSViewMinXMargin)
         header.addSubview_(self.search)
 
-        # A column has nowhere near the room for chips, so there the filter
+        # A column has nowhere near the room for filters, so there the filter
         # becomes one popup carrying the same choices and the same counts.
-        # A wide layout keeps the chips for as long as they fit.
+        # A wide layout keeps the filters for as long as they fit.
         #
         # Measured against the width the panel will END UP at, not the one it
         # has right now: it is created at a placeholder 820pt and only takes
         # its real width afterwards, from the saved frame or the share of the
         # screen. Asking `size` here decided a two-thousand-point strip's
-        # filter as though it were 820 wide, and hid the chips on a panel
+        # filter as though it were 820 wide, and hid the filters on a panel
         # with room for twice as many.
         self.filters = filter_list()
-        self.compact_filter = column or not chips_fit(self.plannedWidth(),
+        self.compact_filter = column or not filters_fit(self.plannedWidth(),
                                                       self.filters)
         if self.compact_filter:
             self.filter = NSPopUpButton.alloc().initWithFrame_pullsDown_(
@@ -3104,10 +3104,10 @@ class PickerController(NSObject):
     def _layoutHeader(self):
         """Place the header by measurement, not by fixed columns.
 
-        The chips carry counts, so their width changes as clippings come and
+        The filters carry counts, so their width changes as clippings come and
         go, and the panel is used both as a wide strip and as an 820pt grid.
-        Fixed columns collided in the narrow case: status, five chips, help
-        and search want about 950pt and the grid has 820. So the chips are
+        Fixed columns collided in the narrow case: status, five filters, help
+        and search want about 950pt and the grid has 820. So the filters are
         sized to their labels, search and help are pinned to the right, and
         the status line takes whatever is left.
         """
@@ -3139,16 +3139,16 @@ class PickerController(NSObject):
                 NSMakeRect(left, 12, max(30, width - left - 46), 18))
             return
         self.filter.sizeToFit()
-        chips_w = self.filter.frame().size.width
+        filters_w = self.filter.frame().size.width
         search_x = width - 12 - SEARCH_W
         help_x = search_x - 34
-        chips_x = min(FILTER_X, help_x - 12 - chips_w)
-        chips_x = max(12 + 90, chips_x)     # never crowd the status out
+        filters_x = min(FILTER_X, help_x - 12 - filters_w)
+        filters_x = max(12 + 90, filters_x)     # never crowd the status out
         self.search.setFrame_(NSMakeRect(search_x, 8, SEARCH_W, 26))
         self.help_button.setFrame_(NSMakeRect(help_x, 9, 26, 24))
-        self.filter.setFrame_(NSMakeRect(chips_x, 9, chips_w, 24))
+        self.filter.setFrame_(NSMakeRect(filters_x, 9, filters_w, 24))
         self.status.setFrame_(
-            NSMakeRect(12, 12, max(60, chips_x - 24), 18))
+            NSMakeRect(12, 12, max(60, filters_x - 24), 18))
 
     def reload(self):
         query = str(self.search.stringValue() or "")
@@ -3187,16 +3187,16 @@ class PickerController(NSObject):
             items = self.app.store.unsealed(items)
         self.grid.setItems_(items)
         self.grid.scrollSelectionIntoView()
-        self._refreshChips_(query)
+        self._refreshFilters_(query)
         total = self.app.store.count()
         shown = len(items)
         self._resetStatus(shown, total)
 
-    def _refreshChips_(self, query):
-        """Each chip says how many of that kind EXIST.
+    def _refreshFilters_(self, query):
+        """Each filter says how many of that kind EXIST.
 
         They used to answer under the search in force, which made every
-        number move as you typed — so a chip could not be used to decide
+        number move as you typed — so a filter could not be used to decide
         where to look, which is the only reason to put a number on it. How
         many the search left is a different fact, and belongs in the status
         line, which says so.
@@ -3235,7 +3235,7 @@ class PickerController(NSObject):
         # ever offered 155, so it had been silently truncated since the
         # search field moved right. It lives in the tooltip and in the help.
         if getattr(self, "compact_filter", False):
-            # "of N" goes too — the All chip beside it carries the total.
+            # "of N" goes too — the All filter beside it carries the total.
             short = ("%d visible" % shown) if shown != total else note
         else:
             short = "%s  ·  %s" % (note,
@@ -3482,7 +3482,7 @@ class PickerController(NSObject):
     def gridDidAskToHide_(self, items):
         """Seal these clippings, or unseal them if they are already sealed.
 
-        One key both ways, decided by which chip is in force, for the same
+        One key both ways, decided by which filter is in force, for the same
         reason ⌘⇧F is: from where the user is standing it is one idea —
         this should be hidden, or it should not be.
         """
@@ -3517,7 +3517,7 @@ class PickerController(NSObject):
         self._editor.show()
 
     def gridDidAskToSaveFilter(self):
-        """Turn what is in the search field into a chip, or drop the chip
+        """Turn what is in the search field into a filter, or drop the filter
         that is selected.
 
         One key does both because they are the same gesture from the user's
@@ -3536,7 +3536,7 @@ class PickerController(NSObject):
             alert = NSAlert.alloc().init()
             alert.setMessageText_("Remove the \u201c%s\u201d filter?" % label)
             alert.setInformativeText_(
-                "The clippings stay. Only the chip goes.")
+                "The clippings stay. Only the filter goes.")
             alert.addButtonWithTitle_("Remove")
             alert.addButtonWithTitle_("Cancel")
             if alert.runModal() != 1000:
@@ -3561,7 +3561,7 @@ class PickerController(NSObject):
         existing = [(n, q) for n, q in saved_filters() if n != name]
         set_saved_filters(existing + [(name, query)])
         # The search that made the filter has been answered by the filter,
-        # so it is cleared — leaving both in force would show the chip's
+        # so it is cleared — leaving both in force would show the filter's
         # count against a list narrowed twice by the same words.
         self.search.setStringValue_("")
         self.app.rebuildPicker()
@@ -3757,7 +3757,7 @@ class PickerController(NSObject):
     def menuPin_(self, sender):
         """Pin or unpin — and stay with the clipping when it moves.
 
-        Unpinning re-sorts it out of the front, and if the Pinned chip is
+        Unpinning re-sorts it out of the front, and if the Pinned filter is
         the one in force it leaves the list altogether.  Since unpinning is
         now the step before deleting, losing sight of the card at exactly
         that moment is the worst possible time, so the filter falls back to
@@ -4066,16 +4066,16 @@ HELP_SECTIONS = (
         ("aug", "or august, or friday"),
         ("8/28", "or 2026-08-28, or 2026, or 12:55 pm"),
         ("All / Pinned / Notes / Images / Text / URL / Hidden",
-         "the seven built-in chips, in that order; each carries its own "
+         "the seven built-in filters, in that order; each carries its own "
          "count. They are always there and cannot be removed"),
-        ("⌘⇧F", "keep whatever is in the search field as a chip of its own, "
+        ("⌘⇧F", "keep whatever is in the search field as a filter of its own, "
                  "under a name you choose. It is APPENDED after the seven "
-                 "built-in chips, and so is every one after it, in the order "
-                 "you made them. Selecting that chip and typing searches "
-                 "WITHIN it. Empty the field, select the chip and press ⌘⇧F "
+                 "built-in filters, and so is every one after it, in the order "
+                 "you made them. Selecting that filter and typing searches "
+                 "WITHIN it. Empty the field, select the filter and press ⌘⇧F "
                  "again to remove it — the clippings stay"),
         ("too many to fit", "the whole row becomes one popup menu, carrying "
-                             "the same chips and the same counts. It is the "
+                             "the same filters and the same counts. It is the "
                              "room that decides, not the number, so a wide "
                              "strip holds far more than a column"),
     )),
@@ -4092,9 +4092,9 @@ HELP_SECTIONS = (
     ("Hiding one", (
         ("⌘H", "hide the selected clippings. They vanish from every list, "
                 "every count and every search — not greyed out, absent"),
-        ("Hidden", "the chip that shows them, behind Touch ID. It locks "
+        ("Hidden", "the filter that shows them, behind Touch ID. It locks "
                     "again the moment the picker closes"),
-        ("⌘H again", "under the Hidden chip, puts them back in the open"),
+        ("⌘H again", "under the Hidden filter, puts them back in the open"),
         ("what is sealed", "the text, the preview, the picture and the "
                             "thumbnail are encrypted; the source app is "
                             "cleared and the fingerprint randomised. "
