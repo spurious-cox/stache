@@ -20,7 +20,7 @@ The name is the joke: a *stache* is where you *stash* things.
 
     ⌃⌥⌘Space        open the picker
 
-## New in 2.0
+## New in 2
 
 * **Notes** — reference text you type, kept as a clipping (⌘N).
 * **Filters made on the fly** — a search you like becomes a chip (⌘⇧F).
@@ -31,8 +31,12 @@ The name is the joke: a *stache* is where you *stash* things.
 * **The menu bar menu no longer lists clippings.** It opens with one click and
   no authentication, which is the wrong place for the history now that
   clippings can be hidden.
+* **The pointer crossing another window no longer closes the picker** — only a
+  real click does.
 * The **column** layout hangs from the top of the screen instead of standing
   on the Dock.
+* Preferences, Help and the editor no longer vanish when Stache stops being
+  the active application.
 
 ## Using it
 
