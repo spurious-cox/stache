@@ -405,7 +405,7 @@ History:
   1.0.0  First release.
 """
 
-APP_VERSION = "2.1.0"
+APP_VERSION = "2.2.0"
 COPYRIGHT = "© 2026 Tim McCoy"
 APP_NAME = "Stache"
 BUNDLE_ID = "com.timmccoy.stache"
@@ -2966,6 +2966,16 @@ class PickerController(NSObject):
                 and not getattr(self, "_modal", False)
                 and not getattr(self, "_yielding", False)):
             return
+        # Was a mouse button down at the moment focus left? Read here rather
+        # than in _hideUnlessOurs_, which runs a turn of the run loop later,
+        # by which time a quick click has been released.
+        #
+        # This is what tells a click apart from a pointer merely crossing
+        # another window. Terminal has a FocusFollowsMouse preference, and
+        # with it on, moving the mouse over a Terminal window makes it key —
+        # no click, no intent, and the picker used to vanish on the way past.
+        # A dismissal wants a deliberate act, and clicking is one.
+        self._resign_click = bool(NSEvent.pressedMouseButtons())
         # Losing key to one of OUR OWN windows — Preferences, the help — is
         # not clicking away. Which window is taking over is not known yet at
         # resign time, so the decision waits one turn of the run loop.
@@ -2980,6 +2990,10 @@ class PickerController(NSObject):
         # the moment a resign is delivered the replacement may not be key
         # yet, and it reads as nothing at all.
         if getattr(self, "_modal", False) or getattr(self, "_yielding", False):
+            return
+        if not getattr(self, "_resign_click", True):
+            # Focus wandered rather than being taken. Stay put — the hotkey,
+            # esc and a real click all still close it.
             return
         self.hide()
 

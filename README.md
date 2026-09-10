@@ -70,6 +70,10 @@ Three layouts, set in Preferences, each remembering its own size and place:
 Picking does not close the picker and does not hand back the keyboard, so the
 sequence is **pick, Esc, ⌘V**.
 
+Clicking away closes it; the pointer merely crossing another window does not.
+That distinction matters if you use Terminal's *FocusFollowsMouse*, which
+makes a window key on hover — the picker stays put until you actually click.
+
 Drag the panel anywhere and resize it; the frame is saved per layout. One
 dimension is fixed by the card — a strip's height, a column's width. ⌘0
 forgets a dragged position, which matters if it was dragged to a display you
