@@ -621,6 +621,44 @@ def _refuses(vault, blob):
         return True
 
 
+def test_order():
+    """Newest first everywhere, and pinning or hiding counts as newest."""
+    print("order")
+    vault = stache.Vault(os.path.join(SCRATCH, "order.key"))
+    store = stache.Store(os.path.join(SCRATCH, "order.sqlite3"), vault=vault)
+    ids = []
+    for n in range(4):
+        ids.append(store.add_text("clipping %d" % n, "Notes"))
+        time.sleep(0.02)
+    newest = ids[-1]
+    check("the list opens on the newest clipping",
+          store.items()[0].id == newest, str(store.items()[0].id))
+
+    store.set_pinned(ids[0], True)
+    check("pinning the oldest brings it to the front",
+          store.items()[0].id == ids[0], str(store.items()[0].id))
+    check("and it does not stay there once something newer is pinned",
+          (store.set_pinned(ids[1], True) or store.items()[0].id) == ids[1],
+          str(store.items()[0].id))
+    check("the Pinned chip is newest-pinned first",
+          [i.id for i in store.items(kind="pinned")] == [ids[1], ids[0]],
+          str([i.id for i in store.items(kind="pinned")]))
+
+    store.hide([ids[2]])
+    time.sleep(0.02)
+    store.hide([ids[3]])
+    check("the Hidden chip is newest-hidden first",
+          [i.id for i in store.items(kind="hidden")] == [ids[3], ids[2]],
+          str([i.id for i in store.items(kind="hidden")]))
+    check("and hidden clippings are still absent from All",
+          [i.id for i in store.items()] == [ids[1], ids[0]],
+          str([i.id for i in store.items()]))
+
+    store.reveal([ids[2]])
+    check("revealing one puts it at the front of All",
+          store.items()[0].id == ids[2], str(store.items()[0].id))
+
+
 def test_render():
     print("render")
     NSApplication.sharedApplication()
@@ -1064,6 +1102,13 @@ def test_render():
     # Unpinning under the Pinned chip keeps the card in sight: the filter
     # falls back to All and the selection stays on the same clipping.
     picker.reload()
+    # Pin exactly one, having cleared the rest: this used to rely on the
+    # pinned clipping already being first, which was true only while pinned
+    # items were forced to the front of every list.
+    for item in store.items():
+        if item.pinned:
+            store.set_pinned(item.id, False)
+    picker.reload()
     victim = picker.grid.items()[0]
     store.set_pinned(victim.id, True)
     picker.selectKindIndex_(
@@ -1101,6 +1146,7 @@ if __name__ == "__main__":
         test_saved_filters()
         test_notes()
         test_hidden()
+        test_order()
         test_render()
     finally:
         shutil.rmtree(SCRATCH, ignore_errors=True)

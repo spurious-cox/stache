@@ -405,7 +405,7 @@ History:
   1.0.0  First release.
 """
 
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.1.0"
 COPYRIGHT = "© 2026 Tim McCoy"
 APP_NAME = "Stache"
 BUNDLE_ID = "com.timmccoy.stache"
@@ -784,8 +784,10 @@ CREATE TABLE IF NOT EXISTS items (
                                           -- capture and never changes
     stamp    TEXT    DEFAULT '',         -- the capture time, written several
                                          -- ways, so dates are searchable
-    hidden   INTEGER NOT NULL DEFAULT 0  -- sealed: body, preview and any
+    hidden   INTEGER NOT NULL DEFAULT 0, -- sealed: body, preview and any
                                          -- blob are ciphertext
+    changed  REAL                        -- when it was last pinned, hidden
+                                         -- or revealed; orders the lists
 );
 CREATE INDEX IF NOT EXISTS items_created ON items (created DESC);
 CREATE INDEX IF NOT EXISTS items_digest  ON items (digest);
@@ -995,6 +997,11 @@ class Store(object):
             # that has been must stop claiming to be a verbatim capture.
             self.db.execute(
                 "ALTER TABLE items ADD COLUMN edited INTEGER NOT NULL DEFAULT 0")
+        if "changed" not in columns:
+            # 2.1.0: pinning or hiding a clipping is an act, and the lists
+            # order by when it happened. Left NULL for everything already
+            # captured, which falls back to `used` and then `created`.
+            self.db.execute("ALTER TABLE items ADD COLUMN changed REAL")
         if "hidden" not in columns:
             # 2.0.0: the hidden filter. Default 0, so every clipping already
             # captured stays exactly as visible as it was.
@@ -1116,7 +1123,12 @@ class Store(object):
             sql += " WHERE " + " AND ".join(where)
         # Ordered by last use, so a recalled clipping comes to the front —
         # without disturbing the capture time the card shows.
-        sql += " ORDER BY pinned DESC, COALESCE(used, created) DESC LIMIT ?"
+        # Newest first, full stop. Pinned clippings used to be forced to the
+        # front of every list, which meant the picker did not open on the
+        # thing just copied — the whole point of opening it. A pinned or
+        # hidden clipping still reaches the front of its own chip, because
+        # pinning and hiding set `changed` and that is what is sorted on.
+        sql += " ORDER BY COALESCE(changed, used, created) DESC LIMIT ?"
         args.append(limit)
         return [Item(r) for r in self.db.execute(sql, args)]
 
@@ -1317,8 +1329,8 @@ class Store(object):
         return True
 
     def set_pinned(self, item_id, pinned):
-        self.db.execute("UPDATE items SET pinned = ? WHERE id = ?",
-                        (1 if pinned else 0, item_id))
+        self.db.execute("UPDATE items SET pinned = ?, changed = ? WHERE id = ?",
+                        (1 if pinned else 0, time.time(), item_id))
         self.db.commit()
 
     def delete(self, item_ids):
@@ -1375,10 +1387,11 @@ class Store(object):
                 _unlink(os.path.join(THUMB_DIR, thumb))
             self.db.execute(
                 "UPDATE items SET hidden = 1, body = ?, preview = ?, "
-                "thumb = NULL, app = '', digest = ? WHERE id = ?",
+                "thumb = NULL, app = '', digest = ?, changed = ? "
+                "WHERE id = ?",
                 (self.vault.seal_text(body or ""),
                  self.vault.seal_text(preview or ""),
-                 os.urandom(32).hex(), item_id))
+                 os.urandom(32).hex(), time.time(), item_id))
             done += 1
         self.db.commit()
         return done
@@ -1416,10 +1429,10 @@ class Store(object):
                         pass
             self.db.execute(
                 "UPDATE items SET hidden = 0, body = ?, preview = ?, "
-                "digest = ? WHERE id = ?",
+                "digest = ?, changed = ? WHERE id = ?",
                 (plain_body, plain_preview,
                  hashlib.sha256(plain_body.encode("utf-8")).hexdigest(),
-                 item_id))
+                 time.time(), item_id))
             done += 1
         self.db.commit()
         return done

@@ -25,6 +25,9 @@ The name is the joke: a *stache* is where you *stash* things.
 * **Notes** — reference text you type, kept as a clipping (⌘N).
 * **Filters made on the fly** — a search you like becomes a chip (⌘⇧F).
 * **Hidden clippings** — sealed out of every list, behind Touch ID (⌘H).
+* **Newest first, everywhere.** Pinned clippings no longer jump the queue, so
+  the picker opens on what you just copied. Pinning or hiding one counts as
+  activity, so it goes to the front of its own chip.
 * **The menu bar menu no longer lists clippings.** It opens with one click and
   no authentication, which is the wrong place for the history now that
   clippings can be hidden.
@@ -89,7 +92,7 @@ A changed card shows **edited** beside its date.
 
 ## Pinning
 
-A pinned clipping sorts first and is exempt from the item limit, the age
+A pinned clipping is exempt from the item limit, the age
 limit and Clear History. **It cannot be deleted while pinned** — unpin it
 first. Deleting a mixed selection deletes the unpinned ones and says how many
 it kept.
