@@ -20,10 +20,23 @@ The name is the joke: a *stache* is where you *stash* things.
 
     ⌃⌥⌘Space        open the picker
 
+## New in 2.0
+
+* **Notes** — reference text you type, kept as a clipping (⌘N).
+* **Filters made on the fly** — a search you like becomes a chip (⌘⇧F).
+* **Hidden clippings** — sealed out of every list, behind Touch ID (⌘H).
+* **The menu bar menu no longer lists clippings.** It opens with one click and
+  no authentication, which is the wrong place for the history now that
+  clippings can be hidden.
+* The **column** layout hangs from the top of the screen instead of standing
+  on the Dock.
+
 ## Using it
 
-No Dock icon and no window of its own — Stache lives in the menu bar, which
-also lists the ten newest clippings (⌘1–⌘9 while it is open).
+No Dock icon and no window of its own — Stache lives in the menu bar. That
+menu holds **no clippings**: it opens with one click and no authentication,
+which is the wrong place for the history when hidden clippings exist. It is
+About, Preferences, Help, Open, Pause Capturing, Clear History and Quit.
 
 Three layouts, set in Preferences, each remembering its own size and place:
 
@@ -44,9 +57,12 @@ Three layouts, set in Preferences, each remembering its own size and place:
 | ⌫ | delete for good — asks once for more than one |
 | type anything | jumps into the search field |
 | ⌘0 | put the panel back where it belongs |
+| ⌘N | write a note |
+| ⌘H | hide the selection — or reveal it, under the Hidden chip |
+| ⌘⇧F | keep the current search as a chip, or remove the chip you are on |
 | ⌘/ | the full help |
 | Esc | close, clipboard untouched |
-| All / Pinned / Images / Text / URL | filter by kind, each chip carrying its count |
+| All / Pinned / Notes / Images / Text / URL / Hidden | filter by kind, each chip carrying its count |
 
 Picking does not close the picker and does not hand back the keyboard, so the
 sequence is **pick, Esc, ⌘V**.
@@ -77,6 +93,42 @@ A pinned clipping sorts first and is exempt from the item limit, the age
 limit and Clear History. **It cannot be deleted while pinned** — unpin it
 first. Deleting a mixed selection deletes the unpinned ones and says how many
 it kept.
+
+## Notes
+
+⌘N writes one. A note is an ordinary clipping you typed rather than copied, so
+it searches, pins, filters and previews like any other — and it is editable
+without pinning first.
+
+Notes are exempt from the item limit and the age limit, and never show an
+expiry countdown.
+
+## Filters made on the fly
+
+⌘⇧F keeps whatever is in the search field as a chip of its own, under a name
+you choose. Selecting that chip and typing searches **within** it. To remove
+one: empty the field, select the chip, ⌘⇧F again — the clippings stay.
+
+Saved filters live in preferences, not the database. Past seven chips the row
+becomes a popup.
+
+## Hidden clippings
+
+⌘H seals the selection. Hidden clippings leave every list, every count and
+every search — absent, not greyed out. The **Hidden** chip shows them after
+Touch ID, and locks again when the picker closes. ⌘H there puts them back.
+
+Sealed means the body, the preview and any image are encrypted (AES-256-CBC
+with an HMAC over the ciphertext), the thumbnail is deleted, the source app is
+cleared and the digest randomised. Copying the database gets an attacker
+nothing.
+
+**What it does not do:** the key is a 0600 file in Application Support, so
+Touch ID guards the window and not the key — anything already running as you
+could read it. The keychain that can hold a key behind biometry needs an
+entitlement this app cannot have.
+
+Unlock falls back to your login password, so a Mac without Touch ID works too.
 
 ## Preferences
 
@@ -138,14 +190,15 @@ for you — synthesising a keystroke would have required Accessibility.
     stache stats           how much history there is
 
 Numbers match the app. The database is opened read-only except for `rm`, so
-it is safe to run while the app is running.
+it is safe to run while the app is running. It cannot see hidden clippings —
+the key belongs to the app.
 
 ## Building
 
     ./venv/bin/python test_stache.py      headless checks + test_render*.png
     ./build.sh                            build and sign into dist/
     ./build.sh --install                  also install to /Applications
-    ./release.sh                          notarize app + DMG, staple, install
+    STACHE2_PUBLISH=yes ./release.sh      notarize + DMG (refuses without it)
 
 The version lives in one place — `APP_VERSION` in `stache.py`.
 
@@ -158,7 +211,6 @@ The version lives in one place — `APP_VERSION` in `stache.py`.
     setup.py            py2app bundle
     build.sh            build, sign, install
     release.sh          notarize and staple app + DMG
-    ~/bin/stache        the command-line client (stdlib only, no venv)
     stache.entitlements hardened-runtime entitlements
 
 © 2026 Tim McCoy.

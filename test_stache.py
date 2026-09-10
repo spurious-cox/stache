@@ -138,7 +138,7 @@ def test_hotkey_labels():
 
 
 def test_menu():
-    print("menu bar list")
+    print("menu titles")   # used by alerts now, not by the menu bar
     store = stache.Store(stache.DB_PATH)
     store.add_text("   a clipping   with  collapsed\n whitespace  ", app="Notes")
     store.add_text("x" * 200, app="Notes")
@@ -160,14 +160,6 @@ def test_menu():
     check("an image gets its dimensions as a title",
           stache._menu_title(image) == "Image  320 × 200",
           stache._menu_title(image))
-    thumb = stache._menu_thumb(image)
-    check("an image gets a postage-stamp beside it",
-          thumb is not None and thumb.size().height <= 18,
-          None if thumb is None else str(thumb.size()))
-    check("a text clipping gets no image",
-          stache._menu_thumb(text_items[0]) is None)
-    check("the menu asks for at most ten",
-          len(store.items(limit=stache.RECENT_IN_MENU)) <= 10)
     store.clear(keep_pinned=False)
     store.close()
 
@@ -444,6 +436,191 @@ class FakeApp(object):
         pass
 
 
+def test_saved_filters():
+    """A saved search behaves like a built-in chip, in both directions."""
+    print("saved filters")
+    store = stache.Store(os.path.join(SCRATCH, "filters.sqlite3"))
+    now = time.time()
+    for kind, body, app in (("text", "hello world", "Safari"),
+                            ("text", "https://apple.com", "Mail"),
+                            ("text", "hello again", "Notes")):
+        store.add_text(body, app)
+    kinds = [None, ("search", "hello"), "url"]
+    counts = store.counts("", kinds)
+    check("a saved search counts like a chip",
+          counts[("search", "hello")] == 2, str(counts))
+    check("and the built-ins still count beside it",
+          counts["all"] == 3 and counts["url"] == 1, str(counts))
+    got = [i.preview for i in store.items(kind=("search", "hello"))]
+    check("it lists exactly what it counted", len(got) == 2, str(got))
+    both = store.items(query="again", kind=("search", "hello"))
+    check("a typed search narrows a saved one, rather than replacing it",
+          len(both) == 1, str([i.preview for i in both]))
+    check("a saved search that matches nothing shows nothing",
+          store.items(kind=("search", "zzzz")) == [], "expected empty")
+    check("an unknown kind falls back to everything",
+          len(store.items(kind="nonsense")) == 3, "expected all three")
+
+    stache.set_saved_filters([("Recipes", "hello")])
+    names = [n for n, _q in stache.saved_filters()]
+    check("a saved filter survives the round trip through preferences",
+          names == ["Recipes"], str(names))
+    # Asked against the app's own built-ins rather than a list written out
+    # here, so adding a chip (Notes did) does not fail this for the wrong
+    # reason.
+    built_in = [label for label, _kind in stache.FILTER_KINDS]
+    labels = [label for label, _kind in stache.filter_list()]
+    check("and it appears after the built-in chips",
+          labels[:len(built_in)] == built_in and labels[-1] == "Recipes",
+          str(labels))
+    stache.set_saved_filters([])
+    check("removing it leaves the built-ins alone",
+          [l for l, _k in stache.filter_list()] == built_in,
+          str([l for l, _k in stache.filter_list()]))
+
+
+def test_notes():
+    """A note is a clipping you wrote, and the retention sweep leaves it."""
+    print("notes")
+    store = stache.Store(os.path.join(SCRATCH, "notes.sqlite3"))
+    note_id = store.add_note("Rule of 20: HCP + two longest suits")
+    check("a note is stored", note_id is not None, str(note_id))
+    note = store.get(note_id)
+    check("it is its own kind", note.kind == "note", note.kind)
+    check("and says where it came from", note.app == "Note", note.app)
+    check("the Notes chip finds it",
+          [i.id for i in store.items(kind="note")] == [note_id], "one note")
+    check("it is not counted as a text clipping",
+          store.items(kind="text") == [], "expected none")
+    check("but search still reaches it",
+          len(store.items(query="Rule of 20")) == 1, "expected one")
+
+    store.add_text("an ordinary capture", "Safari")
+    old = time.time() - 400 * 86400
+    store.db.execute("UPDATE items SET created = ?, used = ?", (old, old))
+    store.db.commit()
+    store.prune(max_items=1, max_days=30)
+    left = [i.kind for i in store.items()]
+    check("the age cap takes the capture and leaves the note",
+          left == ["note"], str(left))
+    check("and a note never shows a countdown",
+          store.get(note_id).days_left(30) is None, "expected None")
+
+    empty = store.add_note("")
+    check("two empty notes are two notes, not one promoted twice",
+          empty != note_id and len(store.items(kind="note")) == 2,
+          str(len(store.items(kind="note"))))
+    store.set_body(note_id, "an ordinary capture")
+    same = store.add_text("an ordinary capture", "Safari")
+    check("a note whose words match a capture does not swallow it",
+          same is not None and store.get(same).kind == "text",
+          "capture recorded separately")
+    check("and editing a note does not mark it edited",
+          store.get(note_id).edited == 0, str(store.get(note_id).edited))
+
+
+def test_hidden():
+    """Hiding a clipping seals it; nothing outside its own chip sees it."""
+    print("hidden")
+    vault = stache.Vault(os.path.join(SCRATCH, "vault.key"))
+    store = stache.Store(os.path.join(SCRATCH, "hidden.sqlite3"), vault=vault)
+    secret = store.add_text("swordfish is the password", "1Password")
+    store.add_text("an ordinary clipping", "Safari")
+
+    check("the vault seals and opens its own text",
+          vault.unseal_text(vault.seal_text("héllo")) == "héllo", "round trip")
+    check("a tampered seal is refused",
+          _refuses(vault, bytearray(vault.seal(b"x"))), "MAC checked")
+    check("the same text seals differently every time",
+          vault.seal(b"x") != vault.seal(b"x"), "random IV")
+    check("the key file is readable only by its owner",
+          oct(os.stat(vault.path).st_mode & 0o777) == "0o600",
+          oct(os.stat(vault.path).st_mode & 0o777))
+
+    check("hiding reports what it did", store.hide([secret]) == 1, "one")
+    row = store.db.execute(
+        "SELECT body, preview, app, digest, hidden FROM items WHERE id = ?",
+        (secret,)).fetchone()
+    check("the body is no longer in the database",
+          "swordfish" not in str(row[0]), str(row[0])[:40])
+    check("nor is the preview", "swordfish" not in str(row[1]), str(row[1])[:40])
+    check("the source application is cleared too", row[2] == "", repr(row[2]))
+    check("and the digest cannot be matched against a known file",
+          len(row[3]) == 64 and row[3] != stache.hashlib.sha256(
+              b"swordfish is the password").hexdigest(), "randomised")
+
+    check("it is gone from All", len(store.items()) == 1, str(len(store.items())))
+    check("gone from Text too", len(store.items(kind="text")) == 1, "one")
+    check("gone from search, even by its own words",
+          store.items(query="swordfish") == [], "nothing found")
+    check("gone from the count the status line reads",
+          store.count() == 1, str(store.count()))
+    check("but the Hidden chip finds it",
+          len(store.items(kind="hidden")) == 1, "one")
+    sealed = store.items(kind="hidden")[0]
+    check("and what it holds is still sealed until asked",
+          "swordfish" not in str(sealed.preview), str(sealed.preview)[:30])
+    opened = store.unsealed(store.items(kind="hidden"))
+    check("unsealing it for display gives the text back",
+          "swordfish" in opened[0].body, opened[0].body[:30])
+
+    old = time.time() - 400 * 86400
+    store.db.execute("UPDATE items SET created = ?, used = ?", (old, old))
+    store.db.commit()
+    store.prune(max_items=1, max_days=30)
+    check("the retention sweep will not take a hidden clipping",
+          len(store.items(kind="hidden")) == 1, "still there")
+
+    check("revealing it reports what it did", store.reveal([secret]) == 1, "one")
+    check("and it is back in the open",
+          len(store.items(query="swordfish")) == 1, "found again")
+    check("with its text intact",
+          store.get(secret).body == "swordfish is the password",
+          store.get(secret).body)
+
+    check("the vault starts locked", not vault.unlocked(), "locked")
+
+    # 2.0.2: editing a hidden clipping used to write the plaintext straight
+    # back into the sealed row.
+    again = store.add_text("second secret", "1Password")
+    store.hide([again])
+    store.set_body(again, "edited while hidden")
+    raw = store.db.execute("SELECT body, preview, hidden FROM items "
+                           "WHERE id = ?", (again,)).fetchone()
+    check("editing a hidden clipping does not leave plaintext behind",
+          "edited while hidden" not in str(raw[0]), str(raw[0])[:40])
+    check("and it is still marked hidden", raw[2] == 1, str(raw[2]))
+    check("the new text unseals to what was typed",
+          store.unsealed(store.items(kind="hidden"))[0].body is not None
+          and "edited while hidden" in [
+              i.body for i in store.unsealed(store.items(kind="hidden"))],
+          "found")
+    check("and it is still absent from search",
+          store.items(query="edited while hidden") == [], "nothing found")
+
+    # A row damaged by the old bug is repaired rather than left broken.
+    store.db.execute("UPDATE items SET body = ?, preview = ? WHERE id = ?",
+                     ("leaked in the clear", "leaked", again))
+    store.db.commit()
+    check("a damaged row is spotted and re-sealed",
+          store.reseal_damaged() == 1, "one repaired")
+    raw = store.db.execute("SELECT body FROM items WHERE id = ?",
+                           (again,)).fetchone()
+    check("and its plaintext is gone from the row",
+          "leaked in the clear" not in str(raw[0]), str(raw[0])[:40])
+    check("repairing an already sealed database changes nothing",
+          store.reseal_damaged() == 0, "none repaired")
+
+
+def _refuses(vault, blob):
+    blob[-1] ^= 1
+    try:
+        vault.unseal(bytes(blob))
+        return False
+    except ValueError:
+        return True
+
+
 def test_render():
     print("render")
     NSApplication.sharedApplication()
@@ -531,12 +708,16 @@ def test_render():
           str(len(picker.grid.items())))
     # Since 1.13.3 the reopen chord is in the TOOLTIP, not the visible line:
     # with it the line wanted 247pt and the strip only ever offered 155.
+    # Asked about the chord the app actually has, not a chord written out
+    # here, so changing the default does not fail this for the wrong reason.
+    chord = stache.hotkey_label(stache.DEFAULT_HOTKEY_CODE,
+                               stache.DEFAULT_HOTKEY_MODS)
     check("the status line fits what it shows",
-          "Space" not in str(picker.status.stringValue())
+          chord not in str(picker.status.stringValue())
           and "item" in str(picker.status.stringValue()),
           str(picker.status.stringValue()))
     check("the hotkey is still reported, in the tooltip",
-          "Space" in str(picker.status.toolTip() or ""),
+          chord in str(picker.status.toolTip() or ""),
           str(picker.status.toolTip()))
     image_item = [i for i in picker.grid.items() if i.kind == "image"][0]
     menu = picker.menuForItem_(image_item)
@@ -811,6 +992,23 @@ def test_render():
           "column y=%.0f strip y=%.0f" % (col.origin.y, row.origin.y))
     check("a column is narrower than the strip is wide",
           col.size.width < row.size.width)
+    # 2.0.3: the column hangs from the top rather than standing on the Dock,
+    # so the newest clipping is in the same place at every size.
+    tall = stache.column_frame(visible, (0, 70, 0), 100)
+    short = stache.column_frame(visible, (0, 70, 0), 30)
+    check("the column's top edge does not move with its height",
+          abs((tall.origin.y + tall.size.height)
+              - (short.origin.y + short.size.height)) < 0.5,
+          "%.0f vs %.0f" % (tall.origin.y + tall.size.height,
+                            short.origin.y + short.size.height))
+    check("and it hangs from the top of the screen",
+          abs((tall.origin.y + tall.size.height)
+              - (visible.origin.y + visible.size.height
+                 - stache.STRIP_EDGE)) < 0.5,
+          "%.0f" % (tall.origin.y + tall.size.height))
+    check("a short column stops well above the Dock",
+          short.origin.y > tall.origin.y,
+          "short y=%.0f tall y=%.0f" % (short.origin.y, tall.origin.y))
 
     grid = picker.grid
     was_row, was_col = grid.single_row, grid.single_col
@@ -900,6 +1098,9 @@ if __name__ == "__main__":
         test_prefs_layout()
         test_dock()
         test_search_dates()
+        test_saved_filters()
+        test_notes()
+        test_hidden()
         test_render()
     finally:
         shutil.rmtree(SCRATCH, ignore_errors=True)

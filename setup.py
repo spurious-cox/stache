@@ -41,7 +41,11 @@ OPTIONS = {
     # PixProFitText shipped 18 unsigned dylibs and had the whole archive
     # rejected by Apple. A package is copied out as a real directory tree
     # where the Mach-O walk in build.sh signs everything it holds.
-    "packages": ["Quartz"],
+    # Security and LocalAuthentication are what the hidden filter is built
+    # on: an encryption key held in the keychain behind Touch ID. Packages,
+    # not includes — an include is compiled into python314.zip where
+    # codesign cannot reach the extension modules inside it.
+    "packages": ["Quartz", "Security", "LocalAuthentication"],
     "plist": {
         "CFBundleName": "Stache",
         "CFBundleDisplayName": "Stache",

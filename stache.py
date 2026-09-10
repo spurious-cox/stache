@@ -405,13 +405,16 @@ History:
   1.0.0  First release.
 """
 
-APP_VERSION = "1.17.2"
+APP_VERSION = "2.0.0"
 COPYRIGHT = "© 2026 Tim McCoy"
 APP_NAME = "Stache"
 BUNDLE_ID = "com.timmccoy.stache"
 
+import base64
 import ctypes
 import hashlib
+import hmac
+import json
 import os
 import sqlite3
 import subprocess
@@ -523,7 +526,6 @@ AGENT_PLIST = os.path.expanduser(
     "~/Library/LaunchAgents/%s.plist" % BUNDLE_ID)
 
 POLL_SECONDS = 0.35
-RECENT_IN_MENU = 10        # clippings listed in the menu bar menu
 
 # NSUserDefaults keys.
 DEF_HOTKEY_CODE = "StacheHotKeyCode"
@@ -538,6 +540,7 @@ DEF_COLUMN_FRAME = "StacheColumnFrame"    # column layout's saved frame
 DEF_HELP_SCALE = "StacheHelpTextScale"    # help window text size, x1.0
 DEF_STRIP_PCT = "StacheStripWidthPercent"  # strip width, % of the screen
 DEF_CARD_SIZE = "StacheCardSize"          # "small", "medium" or "large"
+DEF_FILTERS = "StacheFilters"             # saved searches, as a JSON list
 
 # Control-Option-Command-Space, chosen by Tim.  49 is the Space key.
 DEFAULT_HOTKEY_CODE = 49
@@ -546,6 +549,7 @@ DEFAULT_HOTKEY_MODS = 0x1000 | 0x0800 | 0x0100      # control | option | command
 DEFAULTS = {
     DEF_HOTKEY_CODE: DEFAULT_HOTKEY_CODE,
     DEF_HOTKEY_MODS: DEFAULT_HOTKEY_MODS,
+    DEF_FILTERS: "[]",
     DEF_MAX_ITEMS: 500,
     DEF_MAX_DAYS: 30,
     DEF_CAPTURE_IMAGES: True,
@@ -594,6 +598,169 @@ def set_pref(key, value):
 
 
 # ---------------------------------------------------------------------------
+# Vault
+# ---------------------------------------------------------------------------
+
+VAULT_KEY_PATH = os.path.join(SUPPORT_DIR, "vault.key")
+VAULT_MAGIC = b"S2v1"
+
+# CommonCrypto, reached through libSystem. CCCrypt is the one call needed:
+# AES-256-CBC with PKCS#7 padding. The authentication is HMAC-SHA256 from
+# hashlib on top, encrypt-then-MAC, so a tampered or truncated blob is
+# refused rather than decrypted into rubbish.
+_CC = ctypes.CDLL(None)
+_CC_ENCRYPT, _CC_DECRYPT = 0, 1
+_CC_AES = 0
+_CC_PKCS7 = 0x0001
+
+
+def _aes_cbc(key, iv, data, op):
+    out = ctypes.create_string_buffer(len(data) + 32)
+    moved = ctypes.c_size_t(0)
+    status = _CC.CCCrypt(
+        ctypes.c_uint32(op), ctypes.c_uint32(_CC_AES),
+        ctypes.c_uint32(_CC_PKCS7), key, ctypes.c_size_t(len(key)),
+        iv, data, ctypes.c_size_t(len(data)),
+        out, ctypes.c_size_t(len(out)), ctypes.byref(moved))
+    if status != 0:
+        raise ValueError("CCCrypt failed with status %d" % status)
+    return out.raw[:moved.value]
+
+
+class Vault(object):
+    """Encryption for hidden clippings, with Touch ID standing at the door.
+
+    WHAT THIS PROTECTS AGAINST, precisely, because the difference matters:
+    the clippings are real ciphertext, so copying stache.sqlite3 — off a
+    backup, out of a synced folder, over someone's shoulder — yields
+    nothing. Thumbnails and blobs of hidden images are encrypted too, and
+    the row's digest is replaced with random bytes so the content cannot
+    even be matched against a known file.
+
+    WHAT IT DOES NOT PROTECT AGAINST: the key is a file in Application
+    Support, mode 0600. Anything running as this user can read it, this app
+    included, and Touch ID is a gate on the interface rather than on the
+    key. That was a deliberate choice — the keychain that CAN hold a key
+    behind biometry needs an entitlement authorised by a provisioning
+    profile, and the app has none. Said plainly here so nobody reads more
+    into the padlock than it deserves.
+    """
+
+    def __init__(self, path=VAULT_KEY_PATH):
+        self.path = path
+        self._unlocked_until = 0.0
+
+    # -- the key ----------------------------------------------------------
+
+    def _master(self):
+        """The 32 bytes everything derives from, made on first use."""
+        if os.path.exists(self.path):
+            with open(self.path, "rb") as fh:
+                key = fh.read()
+            if len(key) == 32:
+                return key
+        key = os.urandom(32)
+        # Written 0600 from the start rather than chmod-ed afterwards: a
+        # world-readable instant is still an instant.
+        fd = os.open(self.path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(key)
+        return key
+
+    def _subkeys(self):
+        master = self._master()
+        enc = hmac.new(master, b"stache-encrypt", hashlib.sha256).digest()
+        mac = hmac.new(master, b"stache-mac", hashlib.sha256).digest()
+        return enc, mac
+
+    def exists(self):
+        return os.path.exists(self.path)
+
+    # -- sealing ----------------------------------------------------------
+
+    def seal(self, data):
+        """bytes -> magic | iv | mac | ciphertext."""
+        if isinstance(data, str):
+            data = data.encode("utf-8")
+        enc, mac = self._subkeys()
+        iv = os.urandom(16)
+        body = _aes_cbc(enc, iv, data, _CC_ENCRYPT)
+        tag = hmac.new(mac, iv + body, hashlib.sha256).digest()
+        return VAULT_MAGIC + iv + tag + body
+
+    def unseal(self, blob):
+        """The reverse, refusing anything that fails its MAC."""
+        if not blob or len(blob) < 4 + 16 + 32 or blob[:4] != VAULT_MAGIC:
+            raise ValueError("not a sealed value")
+        iv = blob[4:20]
+        tag = blob[20:52]
+        body = blob[52:]
+        enc, mac = self._subkeys()
+        if not hmac.compare_digest(
+                tag, hmac.new(mac, iv + body, hashlib.sha256).digest()):
+            raise ValueError("sealed value failed its MAC")
+        return _aes_cbc(enc, iv, body, _CC_DECRYPT)
+
+    def seal_text(self, text):
+        return base64.b64encode(self.seal(text or "")).decode("ascii")
+
+    def unseal_text(self, blob):
+        return self.unseal(base64.b64decode(blob)).decode("utf-8", "replace")
+
+    # -- the door ---------------------------------------------------------
+
+    def biometrics_available(self):
+        try:
+            import LocalAuthentication as LA
+        except ImportError:
+            return False
+        ctx = LA.LAContext.alloc().init()
+        ok, _err = ctx.canEvaluatePolicy_error_(
+            LA.LAPolicyDeviceOwnerAuthentication, None)
+        return bool(ok)
+
+    def unlocked(self):
+        return time.time() < self._unlocked_until
+
+    def lock(self):
+        self._unlocked_until = 0.0
+
+    def unlock(self, reason="show your hidden clippings", minutes=5):
+        """Ask for Touch ID, and hold the answer for a few minutes.
+
+        DeviceOwnerAuthentication rather than the biometrics-only policy, so
+        a sleeping keyboard or a failed finger falls back to the login
+        password instead of locking Tim out of his own clippings.
+
+        evaluatePolicy is asynchronous; the answer arrives on a callback.
+        The run loop is pumped rather than blocked, because blocking the
+        main thread here means the Touch ID sheet never draws.
+        """
+        if self.unlocked():
+            return True
+        try:
+            import LocalAuthentication as LA
+            from Foundation import NSRunLoop, NSDate
+        except ImportError:
+            return False
+        ctx = LA.LAContext.alloc().init()
+        state = {}
+        ctx.evaluatePolicy_localizedReason_reply_(
+            LA.LAPolicyDeviceOwnerAuthentication, reason,
+            lambda ok, err: state.update(ok=bool(ok)))
+        loop = NSRunLoop.currentRunLoop()
+        deadline = NSDate.dateWithTimeIntervalSinceNow_(60)
+        while "ok" not in state and NSDate.date().compare_(deadline) < 0:
+            loop.runMode_beforeDate_(
+                "kCFRunLoopDefaultMode",
+                NSDate.dateWithTimeIntervalSinceNow_(0.05))
+        if state.get("ok"):
+            self._unlocked_until = time.time() + minutes * 60
+            return True
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Store
 # ---------------------------------------------------------------------------
 
@@ -615,8 +782,10 @@ CREATE TABLE IF NOT EXISTS items (
     pinned   INTEGER NOT NULL DEFAULT 0,
     used     REAL,                        -- last recalled; created is the
                                           -- capture and never changes
-    stamp    TEXT    DEFAULT ''          -- the capture time, written several
+    stamp    TEXT    DEFAULT '',         -- the capture time, written several
                                          -- ways, so dates are searchable
+    hidden   INTEGER NOT NULL DEFAULT 0  -- sealed: body, preview and any
+                                         -- blob are ciphertext
 );
 CREATE INDEX IF NOT EXISTS items_created ON items (created DESC);
 CREATE INDEX IF NOT EXISTS items_digest  ON items (digest);
@@ -708,12 +877,12 @@ class Item(object):
 
     __slots__ = ("id", "kind", "created", "preview", "body", "blob", "thumb",
                  "width", "height", "nbytes", "app", "pinned", "used",
-                 "edited")
+                 "edited", "hidden")
 
     def __init__(self, row):
         (self.id, self.kind, self.created, self.preview, self.body,
          self.blob, self.thumb, self.width, self.height, self.nbytes,
-         self.app, self.pinned, self.used, self.edited) = row
+         self.app, self.pinned, self.used, self.edited, self.hidden) = row
 
     def url(self):
         """The link, if this clipping is one — otherwise None.
@@ -758,7 +927,7 @@ class Item(object):
 
     def days_left(self, max_days):
         """Days until the age limit takes it, or None if it is safe."""
-        if self.pinned or not max_days:
+        if self.pinned or self.kind == "note" or not max_days:
             return None
         return max_days - (time.time() - self.last_active()) / 86400.0
 
@@ -796,15 +965,18 @@ class Store(object):
 
     COLUMNS = ("id, kind, created, preview, body, blob, thumb, "
                "width, height, nbytes, app, pinned, used, "
-               "COALESCE(edited, 0)")
+               "COALESCE(edited, 0), COALESCE(hidden, 0)")
 
-    def __init__(self, path=DB_PATH):
+    def __init__(self, path=DB_PATH, vault=None):
         for d in (SUPPORT_DIR, BLOB_DIR, THUMB_DIR, EXPORT_DIR):
             os.makedirs(d, exist_ok=True)
+        self.vault = vault if vault is not None else Vault()
         self.db = sqlite3.connect(path)
         self.db.executescript(SCHEMA)
         self._migrate()
         self.db.commit()
+        if self.vault.exists():
+            self.reseal_damaged()
 
     def _migrate(self):
         """Add the stamp column to a database written before 1.4.0, and fill
@@ -823,6 +995,11 @@ class Store(object):
             # that has been must stop claiming to be a verbatim capture.
             self.db.execute(
                 "ALTER TABLE items ADD COLUMN edited INTEGER NOT NULL DEFAULT 0")
+        if "hidden" not in columns:
+            # 2.0.0: the hidden filter. Default 0, so every clipping already
+            # captured stays exactly as visible as it was.
+            self.db.execute(
+                "ALTER TABLE items ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0")
         rows = self.db.execute(
             "SELECT id, created FROM items WHERE stamp IS NULL OR stamp = ''"
         ).fetchall()
@@ -847,15 +1024,29 @@ class Store(object):
                 " AND INSTR(TRIM(COALESCE(body, '')), ' ') = 0")
 
     def _kind_clause(self, kind):
+        """The SQL for one filter, as (clause, args).
+
+        A kind is either one of the built-in names or a saved search, which
+        arrives as ("search", "<query>"). Both come back in the same shape so
+        items() and counts() do not have to know which they were given —
+        that is what lets a filter be made up at runtime instead of living in
+        a tuple at the top of the file.
+        """
+        if isinstance(kind, tuple) and kind and kind[0] == "search":
+            return self._search_clause(kind[1])
         if kind == "image":
-            return "kind = 'image'"
+            return "kind = 'image'", []
+        if kind == "note":
+            return "kind = 'note'", []
         if kind == "url":
-            return self.URL_TEST
+            return self.URL_TEST, []
         if kind == "text":
-            return "kind = 'text' AND NOT (%s)" % self.URL_TEST
+            return "kind = 'text' AND NOT (%s)" % self.URL_TEST, []
         if kind == "pinned":
-            return "pinned = 1"
-        return None
+            return "pinned = 1", []
+        if kind == "hidden":
+            return "hidden = 1", []
+        return None, []
 
     def _search_clause(self, query):
         """The text/date search, as (sql, args). Shared by items() and
@@ -876,17 +1067,29 @@ class Store(object):
             args.append(like)
         return clause, args
 
-    def counts(self, query=""):
-        """How many clippings each chip would show, under this search."""
+    BUILT_IN_KINDS = (None, "pinned", "note", "image", "text", "url",
+                      "hidden")
+
+    def counts(self, query="", kinds=None):
+        """How many clippings each chip would show, under this search.
+
+        `kinds` is whatever the picker is showing — the built-ins, plus any
+        saved searches the user has made into chips. Keys in the answer are
+        the kind itself for a built-in and the ("search", query) tuple for a
+        saved one, so the caller can look up either without a second rule.
+        """
         search, base = self._search_clause(query)
         out = {}
-        for kind in (None, "pinned", "image", "text", "url"):
+        for kind in (self.BUILT_IN_KINDS if kinds is None else kinds):
             where, args = [], list(base)
-            clause = self._kind_clause(kind)
+            clause, clause_args = self._kind_clause(kind)
             if clause:
                 where.append("(%s)" % clause)
+                args = clause_args + args
             if search:
                 where.append("(%s)" % search)
+            if kind != "hidden":
+                where.append("hidden = 0")
             sql = "SELECT COUNT(*) FROM items"
             if where:
                 sql += " WHERE " + " AND ".join(where)
@@ -896,9 +1099,15 @@ class Store(object):
     def items(self, query="", kind=None, limit=1000):
         sql = "SELECT %s FROM items" % self.COLUMNS
         where, args = [], []
-        clause = self._kind_clause(kind)
+        clause, clause_args = self._kind_clause(kind)
         if clause:
             where.append("(%s)" % clause)
+            args += clause_args
+        # Hidden clippings are absent from every list except their own. Not
+        # greyed out, not shown as a padlock — absent, because a card that
+        # says "something is here" is itself the leak.
+        if kind != "hidden":
+            where.append("hidden = 0")
         search, search_args = self._search_clause(query)
         if search:
             where.append("(%s)" % search)
@@ -917,8 +1126,17 @@ class Store(object):
             (item_id,)).fetchone()
         return Item(row) if row else None
 
-    def count(self):
-        return self.db.execute("SELECT COUNT(*) FROM items").fetchone()[0]
+    def count(self, include_hidden=False):
+        """How many clippings there are — not counting hidden ones.
+
+        The status line reads this, and "7 of 12" beside a list of seven
+        would announce that five exist somewhere. Callers that genuinely
+        need the true total, like the retention sweep, ask for it.
+        """
+        sql = "SELECT COUNT(*) FROM items"
+        if not include_hidden:
+            sql += " WHERE hidden = 0"
+        return self.db.execute(sql).fetchone()[0]
 
     def disk_bytes(self):
         total = os.path.getsize(DB_PATH) if os.path.exists(DB_PATH) else 0
@@ -944,6 +1162,27 @@ class Store(object):
             "VALUES ('text', ?, ?, ?, ?, ?, ?, ?, ?)",
             (now, digest, preview, text,
              len(text.encode("utf-8")), app, time_stamp(now), now))
+        self.db.commit()
+        return cur.lastrowid
+
+    def add_note(self, text=""):
+        """A note is a clipping you wrote rather than copied.
+
+        It is an ordinary row with kind 'note', which is the whole point:
+        search, pinning, filters, the card grid, Quick Look and edit-in-place
+        all work on it without a line of new code. What it does NOT get is a
+        digest that can collide with a capture — two empty notes are two
+        notes, not one promoted twice — so the digest carries the row's own
+        creation time.
+        """
+        now = time.time()
+        digest = hashlib.sha256(("note:%r:%r" % (now, text)).encode("utf-8")).hexdigest()
+        cur = self.db.execute(
+            "INSERT INTO items (kind, created, digest, preview, body, "
+            "nbytes, app, stamp, used) "
+            "VALUES ('note', ?, ?, ?, ?, ?, 'Note', ?, ?)",
+            (now, digest, preview_of(text or "New note"), text,
+             len((text or "").encode("utf-8")), time_stamp(now), now))
         self.db.commit()
         return cur.lastrowid
 
@@ -1007,11 +1246,39 @@ class Store(object):
         to the front and its retention clock restarts.
         """
         text = text or ""
+        row = self.db.execute("SELECT kind, created FROM items WHERE id = ?",
+                              (item_id,)).fetchone()
+        kind = row[0] if row else "text"
+        if kind == "note":
+            # A note's digest stays namespaced. Hashing the bare text would
+            # let a note collide with a capture of the same words, and the
+            # next time those words were copied _promote() would find the
+            # note and bump it instead of recording the clipping. `edited`
+            # stays off too: it marks a capture that no longer matches what
+            # was copied, and a note was never a capture.
+            digest = hashlib.sha256(
+                ("note:%r:%r" % (row[1], text)).encode("utf-8")).hexdigest()
+            edited = 0
+        else:
+            digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+            edited = 1
+        body, preview = text, preview_of(text or "Empty note")
+        if self.db.execute("SELECT hidden FROM items WHERE id = ?",
+                           (item_id,)).fetchone()[0]:
+            # Editing a hidden clipping used to write the plaintext straight
+            # back into the sealed row: the secret ended up in the database
+            # in the clear, and the card then said "could not be unsealed"
+            # because it no longer was. What comes out of the editor is
+            # plain text whatever the row is, so it is re-sealed here, and
+            # the digest is randomised again so the new text cannot be
+            # matched either.
+            body = self.vault.seal_text(text)
+            preview = self.vault.seal_text(preview)
+            digest = os.urandom(32).hex()
         self.db.execute(
             "UPDATE items SET body = ?, preview = ?, nbytes = ?, "
-            "digest = ?, edited = 1, used = ? WHERE id = ?",
-            (text, preview_of(text), len(text.encode("utf-8")),
-             hashlib.sha256(text.encode("utf-8")).hexdigest(),
+            "digest = ?, edited = ?, used = ? WHERE id = ?",
+            (body, preview, len(text.encode("utf-8")), digest, edited,
              time.time(), item_id))
         self.db.commit()
 
@@ -1024,23 +1291,28 @@ class Store(object):
         change is invisible and the stale thumbnail looks correct.
         """
         row = self.db.execute(
-            "SELECT blob FROM items WHERE id = ?", (item_id,)).fetchone()
+            "SELECT blob, hidden FROM items WHERE id = ?",
+            (item_id,)).fetchone()
         if row is None or not row[0]:
             return False
-        name = row[0]
+        name, hidden = row[0], row[1]
         path = os.path.join(BLOB_DIR, name)
         try:
             os.makedirs(BLOB_DIR, exist_ok=True)
             with open(path, "wb") as fh:
-                fh.write(png)
+                # A hidden clipping's picture goes back sealed, and gets no
+                # thumbnail: writing the new PNG in the clear would undo the
+                # hiding, and a thumbnail of a secret is a smaller secret.
+                fh.write(self.vault.seal(png) if hidden else png)
         except OSError:
             return False
-        thumb = make_thumbnail(path, name)
+        thumb = None if hidden else make_thumbnail(path, name)
         self.db.execute(
             "UPDATE items SET width = ?, height = ?, nbytes = ?, thumb = ?, "
             "digest = ?, edited = 1, used = ? WHERE id = ?",
             (width, height, len(png), thumb or "",
-             hashlib.sha256(png).hexdigest(), time.time(), item_id))
+             os.urandom(32).hex() if hidden else hashlib.sha256(png).hexdigest(),
+             time.time(), item_id))
         self.db.commit()
         return True
 
@@ -1068,19 +1340,172 @@ class Store(object):
             sql += " WHERE pinned = 0"
         self.delete([r[0] for r in self.db.execute(sql)])
 
+    # -- hiding -----------------------------------------------------------
+
+    def hide(self, item_ids):
+        """Seal these clippings: body, preview, and the picture behind them.
+
+        Everything that could describe the clipping is encrypted or thrown
+        away, not merely flagged:
+
+          body and preview  sealed, base64 in the same columns
+          digest            replaced with random bytes, so the row cannot be
+                            matched against a file somebody already has
+          app               cleared — "1Password" beside a locked card says
+                            plenty on its own
+          blob              sealed in place; the thumbnail is DELETED, since
+                            a thumbnail of a secret is a smaller secret
+        """
+        done = 0
+        for item_id in item_ids:
+            row = self.db.execute(
+                "SELECT body, preview, blob, thumb, hidden FROM items "
+                "WHERE id = ?", (item_id,)).fetchone()
+            if row is None or row[4]:
+                continue
+            body, preview, blob, thumb, _ = row
+            if blob:
+                path = os.path.join(BLOB_DIR, blob)
+                if os.path.exists(path):
+                    with open(path, "rb") as fh:
+                        sealed = self.vault.seal(fh.read())
+                    with open(path, "wb") as fh:
+                        fh.write(sealed)
+            if thumb:
+                _unlink(os.path.join(THUMB_DIR, thumb))
+            self.db.execute(
+                "UPDATE items SET hidden = 1, body = ?, preview = ?, "
+                "thumb = NULL, app = '', digest = ? WHERE id = ?",
+                (self.vault.seal_text(body or ""),
+                 self.vault.seal_text(preview or ""),
+                 os.urandom(32).hex(), item_id))
+            done += 1
+        self.db.commit()
+        return done
+
+    def reveal(self, item_ids):
+        """Put them back the way they were — the exact reverse of hide().
+
+        The thumbnail is not restored, because it was deleted rather than
+        sealed. It is rebuilt on demand the next time the card is drawn,
+        which is the same path a clipping captured before thumbnails existed
+        already takes.
+        """
+        done = 0
+        for item_id in item_ids:
+            row = self.db.execute(
+                "SELECT body, preview, blob, hidden FROM items WHERE id = ?",
+                (item_id,)).fetchone()
+            if row is None or not row[3]:
+                continue
+            body, preview, blob, _ = row
+            try:
+                plain_body = self.vault.unseal_text(body or "")
+                plain_preview = self.vault.unseal_text(preview or "")
+            except (ValueError, TypeError):
+                continue
+            if blob:
+                path = os.path.join(BLOB_DIR, blob)
+                if os.path.exists(path):
+                    with open(path, "rb") as fh:
+                        raw = fh.read()
+                    try:
+                        with open(path, "wb") as fh:
+                            fh.write(self.vault.unseal(raw))
+                    except ValueError:
+                        pass
+            self.db.execute(
+                "UPDATE items SET hidden = 0, body = ?, preview = ?, "
+                "digest = ? WHERE id = ?",
+                (plain_body, plain_preview,
+                 hashlib.sha256(plain_body.encode("utf-8")).hexdigest(),
+                 item_id))
+            done += 1
+        self.db.commit()
+        return done
+
+    def reseal_damaged(self):
+        """Seal any hidden row whose text is sitting there in the clear.
+
+        Needed because 2.0.1 and earlier wrote the plaintext straight back
+        when a hidden clipping was edited. Rather than only fixing the write
+        path and leaving the damage in place, every hidden row is checked on
+        startup and re-sealed if its body will not unseal.
+
+        The database is VACUUMed afterwards when anything was repaired:
+        overwriting a value leaves the old bytes in a freed page, and the
+        whole point of this feature is that the plaintext is not in the file
+        for someone to find.
+        """
+        repaired = 0
+        for item_id, body, preview in self.db.execute(
+                "SELECT id, body, preview FROM items WHERE hidden = 1"):
+            try:
+                self.vault.unseal_text(body or "")
+                continue                      # already sealed, nothing to do
+            except (ValueError, TypeError):
+                pass
+            self.db.execute(
+                "UPDATE items SET body = ?, preview = ?, digest = ? "
+                "WHERE id = ?",
+                (self.vault.seal_text(body or ""),
+                 self.vault.seal_text(preview or ""),
+                 os.urandom(32).hex(), item_id))
+            repaired += 1
+        if repaired:
+            self.db.commit()
+            self.db.execute("VACUUM")
+            self.db.commit()
+        return repaired
+
+    def unsealed(self, items):
+        """The same items with their text readable, for display only.
+
+        Nothing is written back: the row stays sealed, and this copy lives
+        as long as the picker is unlocked. A clipping whose MAC does not
+        check out is shown as such rather than silently skipped, because a
+        clipping quietly missing from a list is how somebody concludes the
+        app ate it.
+        """
+        out = []
+        for item in items:
+            if not getattr(item, "hidden", 0):
+                out.append(item)
+                continue
+            try:
+                item.body = self.vault.unseal_text(item.body or "")
+                item.preview = self.vault.unseal_text(item.preview or "")
+            except (ValueError, TypeError):
+                item.preview = "· could not be unsealed ·"
+                item.body = ""
+            out.append(item)
+        return out
+
     def prune(self, max_items, max_days):
-        """Retention: an item count cap and an age cap, pinned items exempt."""
+        """Retention: an item count cap and an age cap.
+
+        Pinned clippings are exempt, and so are notes: a note is reference
+        text somebody typed on purpose, and sweeping it away after thirty
+        days because it had not been recalled would make the feature
+        useless. Deleting one stays a deliberate act.
+
+        Hidden clippings are exempt too, for a blunter reason: hiding one is
+        as deliberate as it gets, and a sweep that silently deleted the
+        things somebody took the trouble to lock away would be the worst
+        possible behaviour.
+        """
         doomed = []
         if max_days > 0:
             # Counted from the last USE, not the capture: a clipping being
             # reached for regularly should not age out from under you.
             cutoff = time.time() - max_days * 86400
             doomed += [r[0] for r in self.db.execute(
-                "SELECT id FROM items WHERE pinned = 0 "
-                "AND COALESCE(used, created) < ?", (cutoff,))]
+                "SELECT id FROM items WHERE pinned = 0 AND kind != 'note' "
+                "AND hidden = 0 AND COALESCE(used, created) < ?", (cutoff,))]
         if max_items > 0:
             doomed += [r[0] for r in self.db.execute(
-                "SELECT id FROM items WHERE pinned = 0 "
+                "SELECT id FROM items WHERE pinned = 0 AND kind != 'note' "
+                "AND hidden = 0 "
                 "ORDER BY COALESCE(used, created) DESC LIMIT -1 OFFSET ?",
                 (max_items,))]
         self.delete(sorted(set(doomed)))
@@ -1801,6 +2226,19 @@ class GridView(NSView):
               (event.charactersIgnoringModifiers() or "") == "0"):
             if self.delegate is not None:
                 self.delegate.gridDidAskToReset()
+        elif (event.modifierFlags() & NSEventModifierFlagCommand and
+              (event.charactersIgnoringModifiers() or "").lower() == "f"):
+            if self.delegate is not None:
+                self.delegate.gridDidAskToSaveFilter()
+        elif (event.modifierFlags() & NSEventModifierFlagCommand and
+              (event.charactersIgnoringModifiers() or "").lower() == "n"):
+            if self.delegate is not None:
+                self.delegate.gridDidAskForNewNote()
+        elif (event.modifierFlags() & NSEventModifierFlagCommand and
+              (event.charactersIgnoringModifiers() or "").lower() == "h"):
+            chosen = self.selectedItems()
+            if chosen and self.delegate is not None:
+                self.delegate.gridDidAskToHide_(chosen)
         elif self.delegate is not None and _is_typing(event):
             self.delegate.gridDidType_(event)
         else:
@@ -1967,20 +2405,31 @@ COLUMN_CONTENT_W = CARD_W + 2 * MARGIN + 16   # one card, plus the scroller
 
 
 def column_frame(visible, reserve, percent, width=None):
-    """Where the vertical strip sits: down the LEFT edge, clear of the Dock,
-    `percent` of the usable height.
+    """Where the vertical strip sits: down the LEFT edge, hanging from the
+    TOP of the screen, `percent` of the usable height.
 
     The mirror of strip_frame. There the height is dictated by the card and
     the width is yours; here the WIDTH is dictated by the card and the
     height is yours.
+
+    Anchored at the top since 2.0.3. It used to stand on the Dock and grow
+    upwards, so the first card — the newest clipping, the one wanted most of
+    the time — sat at a different height every time the column was resized
+    or the history grew. Hanging it from the top puts the newest clipping in
+    the same place always, and lets the far end stop short of the Dock
+    instead of the near end.
+
+    At 100% the two anchors give the same rectangle; below that the
+    difference is the whole point.
     """
     left, bottom, right = reserve
     usable = visible.size.height - bottom
     percent = max(20, min(100, int(percent)))
     height = max(CARD_H + 120, usable * percent / 100.0)
     height = min(height, usable - 2 * STRIP_EDGE)
+    top = visible.origin.y + visible.size.height - STRIP_EDGE
     return NSMakeRect(visible.origin.x + left + STRIP_EDGE,
-                      visible.origin.y + bottom + STRIP_EDGE,
+                      top - height,
                       COLUMN_CONTENT_W if width is None else width,
                       height)
 
@@ -2011,8 +2460,45 @@ class HeaderView(NSView):
 # The filter chips, in the order they appear. "All" stays: without it the
 # only way back to the whole list is to deselect a chip, and a segmented
 # control in select-one mode will not deselect.
-FILTER_KINDS = (("All", None), ("Pinned", "pinned"), ("Images", "image"),
-                ("Text", "text"), ("URL", "url"))
+FILTER_KINDS = (("All", None), ("Pinned", "pinned"), ("Notes", "note"),
+                ("Images", "image"), ("Text", "text"), ("URL", "url"),
+                ("Hidden", "hidden"))
+
+# Above this many chips the segmented control stops fitting the 820pt grid,
+# so the whole filter becomes the popup the column layout already uses.
+CHIP_LIMIT = 7
+
+
+def saved_filters():
+    """The searches the user has promoted to chips, oldest first.
+
+    Kept in preferences rather than the database: a filter is a question
+    about the clippings, not one of them, and storing it here means no
+    schema change and nothing to migrate.
+    """
+    try:
+        raw = json.loads(pref(DEF_FILTERS) or "[]")
+    except (ValueError, TypeError):
+        return []
+    out = []
+    for entry in raw:
+        if isinstance(entry, dict) and entry.get("name") and entry.get("query"):
+            out.append((str(entry["name"]), str(entry["query"])))
+    return out
+
+
+def set_saved_filters(pairs):
+    set_pref(DEF_FILTERS, json.dumps([{"name": n, "query": q} for n, q in pairs]))
+
+
+def filter_list():
+    """Every chip the picker should show: the built-ins, then the saved ones.
+
+    Same shape throughout — (label, kind) — so nothing downstream needs to
+    know which of the two it is holding.
+    """
+    return list(FILTER_KINDS) + [(name, ("search", query))
+                                 for name, query in saved_filters()]
 SEARCH_W = 220                            # the search field, pinned right
 FILTER_X = 300                            # where the chips start, when there
                                           # is room for them there
@@ -2021,7 +2507,8 @@ SOURCE_ICON = 16                          # the source app badge on a card
 
 HINTS = ("click copy", "⌥click select", "⇧click range", "⌘click add",
          "↵ copy", "Space Quick Look", "⌫ delete", "type to search",
-         "⌘0 reset place", "⌘/ help", "esc closes")
+         "⌘0 reset place", "⌘N note", "⌘H hide", "⌘⇧F keep search",
+         "⌘/ help", "esc closes")
 
 
 class HintView(NSView):
@@ -2156,19 +2643,22 @@ class PickerController(NSObject):
         header.addSubview_(self.search)
 
         # Five chips need about 380pt. A column has nowhere near that, so
-        # there it becomes one popup carrying the same five choices and the
-        # same counts.
-        self.compact_filter = column
-        if column:
+        # there it becomes one popup carrying the same choices and the same
+        # counts. Saved filters land in the same control, and past CHIP_LIMIT
+        # of them the wide layout runs out of room too, so it takes the popup
+        # as well rather than shrinking every label to nothing.
+        self.filters = filter_list()
+        self.compact_filter = column or len(self.filters) > CHIP_LIMIT
+        if self.compact_filter:
             self.filter = NSPopUpButton.alloc().initWithFrame_pullsDown_(
                 NSMakeRect(12, 10, 150, 24), False)
-            self.filter.addItemsWithTitles_([n for n, _ in FILTER_KINDS])
+            self.filter.addItemsWithTitles_([n for n, _ in self.filters])
             self.filter.selectItemAtIndex_(0)
         else:
             self.filter = NSSegmentedControl.alloc().initWithFrame_(
                 NSMakeRect(FILTER_X, 9, 380, 24))
-            self.filter.setSegmentCount_(len(FILTER_KINDS))
-            for i, (label, _kind) in enumerate(FILTER_KINDS):
+            self.filter.setSegmentCount_(len(self.filters))
+            for i, (label, _kind) in enumerate(self.filters):
                 self.filter.setLabel_forSegment_(label, i)
             self.filter.setTrackingMode_(NSSegmentSwitchTrackingSelectOne)
             self.selectKindIndex_(0)
@@ -2290,7 +2780,7 @@ class PickerController(NSObject):
         if query:
             self.search.setStringValue_(query)
         try:
-            if 0 <= int(kind) < len(FILTER_KINDS):
+            if 0 <= int(kind) < len(self.filters):
                 self.selectKindIndex_(int(kind))
         except (TypeError, ValueError):
             pass
@@ -2434,6 +2924,7 @@ class PickerController(NSObject):
     def hide(self):
         defaults().setObject_forKey_(
             NSStringFromRect(self.panel.frame()), self.frameKey())
+        self.relock()
         self.panel.orderOut_(None)
         self._restoreFocus()
 
@@ -2480,11 +2971,30 @@ class PickerController(NSObject):
         self.hide()
 
     def holdOpen(self):
-        """One of our own windows is taking focus — do not dismiss."""
+        """One of our own windows is taking focus — do not dismiss.
+
+        Counted rather than a flag, because the holds nest: opening the menu
+        bar menu takes one, choosing Preferences from it takes another, and
+        the menu closing releases its own a third of a second later. With a
+        boolean the menu's release cleared the preferences hold as well, and
+        the picker vanished behind the window that was meant to be
+        protecting it.
+        """
+        self._holds = getattr(self, "_holds", 0) + 1
         self._modal = True
 
     def releaseHold(self):
-        self._modal = False
+        self._holds = max(0, getattr(self, "_holds", 0) - 1)
+        self._modal = self._holds > 0
+
+    def _releaseHold_(self, ignored):
+        """The delayed form, for a hold that has to outlive the call.
+
+        Focus returning from a system sheet or a closing menu takes a turn
+        or two of the run loop to settle, and a resign delivered in that
+        window would dismiss the panel the hold exists to keep.
+        """
+        self.releaseHold()
 
     def windowWillClose_(self, note):
         self._restoreFocus()
@@ -2507,7 +3017,7 @@ class PickerController(NSObject):
 
     def selectKindIndex_(self, index):
         index = int(index)
-        if not 0 <= index < len(FILTER_KINDS):
+        if not 0 <= index < len(self.filters):
             return
         if getattr(self, "compact_filter", False):
             self.filter.selectItemAtIndex_(index)
@@ -2516,8 +3026,8 @@ class PickerController(NSObject):
 
     def currentKind(self):
         index = self.selectedKindIndex()
-        if 0 <= index < len(FILTER_KINDS):
-            return FILTER_KINDS[index][1]
+        if 0 <= index < len(self.filters):
+            return self.filters[index][1]
         return None
 
     def _layoutHeader(self):
@@ -2571,7 +3081,39 @@ class PickerController(NSObject):
 
     def reload(self):
         query = str(self.search.stringValue() or "")
-        items = self.app.store.items(query=query, kind=self.currentKind())
+        kind = self.currentKind()
+        if (kind == "hidden" and not self.app.store.vault.unlocked()
+                and not getattr(self, "_unlocking", False)):
+            # Asked for at the moment of asking to see them, not at launch:
+            # a prompt on startup teaches people to touch the sensor without
+            # reading, which is the opposite of what a gate is for.
+            #
+            # holdOpen() around it is not optional. The Touch ID sheet takes
+            # key focus, the panel's click-away dismissal reads that as the
+            # user clicking elsewhere, and the picker vanishes — so the
+            # authentication succeeded and there was nothing left on screen
+            # to show the hidden clippings in. _modal is what tells the
+            # dismissal that the window taking focus is our own business.
+            self._unlocking = True
+            self.holdOpen()
+            try:
+                opened = self.app.store.vault.unlock()
+            finally:
+                self._unlocking = False
+                # Take focus back before the hold is released, or a resign
+                # still in flight lands on an unheld panel and closes it.
+                self.panel.makeKeyAndOrderFront_(None)
+                NSApp.activateIgnoringOtherApps_(True)
+                self.performSelector_withObject_afterDelay_(
+                    "_releaseHold:", None, 0.35)
+            if not opened:
+                self.selectKindIndex_(0)
+                kind = None
+                self.status.setTextColor_(NSColor.secondaryLabelColor())
+                self.status.setStringValue_("Hidden clippings stay locked")
+        items = self.app.store.items(query=query, kind=kind)
+        if kind == "hidden":
+            items = self.app.store.unsealed(items)
         self.grid.setItems_(items)
         self.grid.scrollSelectionIntoView()
         self._refreshChips_(query)
@@ -2589,11 +3131,11 @@ class PickerController(NSObject):
         line, which says so.
         """
         try:
-            counts = self.app.store.counts("")
+            counts = self.app.store.counts("", [k for _l, k in self.filters])
         except Exception:
             return
         titles = ["%s (%d)" % (label, counts.get(kind or "all", 0))
-                  for label, kind in FILTER_KINDS]
+                  for label, kind in self.filters]
         if getattr(self, "compact_filter", False):
             # Rebuilding the menu loses the selection, so it is put back.
             chosen = self.filter.indexOfSelectedItem()
@@ -2806,11 +3348,110 @@ class PickerController(NSObject):
     def gridDidCancel(self):
         self.hide()
 
+    def relock(self):
+        """Lock again as the picker leaves the screen.
+
+        The unlock is deliberately short-lived. Leaving it open for the rest
+        of the session would mean one touch in the morning exposes the
+        hidden clippings to every glance at the picker for the rest of the
+        day, which is not what anybody means by hidden.
+        """
+        self.app.store.vault.lock()
+        if self.currentKind() == "hidden":
+            self.selectKindIndex_(0)
+
     def gridDidAskToReset(self):
         self.resetPosition_(None)
 
     def gridDidAskForHelp(self):
         self.app.showHelp()
+
+    def gridDidAskToHide_(self, items):
+        """Seal these clippings, or unseal them if they are already sealed.
+
+        One key both ways, decided by which chip is in force, for the same
+        reason ⌘⇧F is: from where the user is standing it is one idea —
+        this should be hidden, or it should not be.
+        """
+        store = self.app.store
+        if self.currentKind() == "hidden":
+            count = store.reveal([i.id for i in items])
+            said = "%d clipping%s back in the open" % (
+                count, "" if count == 1 else "s")
+        else:
+            count = store.hide([i.id for i in items])
+            said = "%d clipping%s hidden" % (count, "" if count == 1 else "s")
+        self.reload()
+        self.status.setTextColor_(NSColor.secondaryLabelColor())
+        self.status.setStringValue_(said)
+        self.performSelector_withObject_afterDelay_("_clearStatus:", None, 2.5)
+
+    def gridDidAskForNewNote(self):
+        """Make an empty note and open it for typing.
+
+        The note is written to the database BEFORE the editor opens, so the
+        editor is editing a real row and every path that already exists —
+        save, cancel, the card refresh — works unchanged. An abandoned note
+        is an empty note, which the user can delete like anything else.
+        """
+        note_id = self.app.store.add_note("")
+        item = self.app.store.get(note_id)
+        if item is None:
+            return
+        self.reload()
+        self.holdOpen()
+        self._editor = EditorController.alloc().initWithPicker_item_(self, item)
+        self._editor.show()
+
+    def gridDidAskToSaveFilter(self):
+        """Turn what is in the search field into a chip, or drop the chip
+        that is selected.
+
+        One key does both because they are the same gesture from the user's
+        side: this search is worth keeping, or it no longer is. Which one
+        happens is decided by what is in the field, so there is nothing to
+        remember.
+        """
+        query = str(self.search.stringValue() or "").strip()
+        if not query:
+            kind = self.currentKind()
+            if not (isinstance(kind, tuple) and kind[0] == "search"):
+                self.status.setStringValue_(
+                    "Type a search first — \u2318\u21e7F keeps it as a filter")
+                return
+            label = self.filters[self.selectedKindIndex()][0]
+            alert = NSAlert.alloc().init()
+            alert.setMessageText_("Remove the \u201c%s\u201d filter?" % label)
+            alert.setInformativeText_(
+                "The clippings stay. Only the chip goes.")
+            alert.addButtonWithTitle_("Remove")
+            alert.addButtonWithTitle_("Cancel")
+            if alert.runModal() != 1000:
+                return
+            set_saved_filters([(n, q) for n, q in saved_filters() if n != label])
+            self.selectKindIndex_(0)
+            self.app.rebuildPicker()
+            return
+
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_("Keep this search as a filter")
+        alert.setInformativeText_("Searching for: %s" % query)
+        field = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 240, 24))
+        field.setStringValue_(query[:24])
+        alert.setAccessoryView_(field)
+        alert.addButtonWithTitle_("Add")
+        alert.addButtonWithTitle_("Cancel")
+        alert.window().setInitialFirstResponder_(field)
+        if alert.runModal() != 1000:
+            return
+        name = str(field.stringValue() or "").strip() or query[:24]
+        existing = [(n, q) for n, q in saved_filters() if n != name]
+        set_saved_filters(existing + [(name, query)])
+        # The search that made the filter has been answered by the filter,
+        # so it is cleared — leaving both in force would show the chip's
+        # count against a list narrowed twice by the same words.
+        self.search.setStringValue_("")
+        self.app.rebuildPicker()
 
     def gridDidPreview_(self, item):
         # NOT reached from Space since 1.16.0 — real Quick Look replaced
@@ -2878,7 +3519,9 @@ class PickerController(NSObject):
         # Editing in place is offered only for PINNED clippings: an unpinned
         # one is subject to the item cap and the age cap, so the edit would
         # be work the retention sweep deletes later.
-        if item.kind == "text":
+        if item.kind == "note":
+            add("Edit…", "menuEdit:")
+        elif item.kind == "text":
             add("Edit…" if item.pinned else "Edit… (pin it first)",
                 "menuEdit:", bool(item.pinned))
         else:
@@ -2958,7 +3601,12 @@ class PickerController(NSObject):
 
     def menuEdit_(self, sender):
         item = self._menu_item
-        if item is None or item.kind != "text" or not item.pinned:
+        if item is None or item.kind not in ("text", "note"):
+            return
+        # Pinning is what protects a CAPTURE from the retention sweep, so an
+        # unpinned clipping cannot usefully be edited. A note is exempt from
+        # the sweep already, so the same rule would only be in the way.
+        if item.kind == "text" and not item.pinned:
             return
         self.holdOpen()
         self._editor = EditorController.alloc().initWithPicker_item_(self, item)
@@ -3144,12 +3792,16 @@ def _human_bytes(n):
 # ---------------------------------------------------------------------------
 
 class EditorController(NSObject):
-    """A plain editor for one PINNED text clipping, saving in place.
+    """A plain editor for one note or pinned text clipping, saving in place.
 
-    Pinned only, and the restriction is the point rather than a limitation:
-    a pinned clipping is exempt from the item cap, the age cap and Clear
-    History, so it is the only kind where editing is not work the retention
-    sweep will quietly delete later.
+    For a CAPTURE the pinned-only restriction is the point rather than a
+    limitation: a pinned clipping is exempt from the item cap, the age cap
+    and Clear History, so it is the only kind where editing is not work the
+    retention sweep will quietly delete later.
+
+    A NOTE is exempt from all of that by being a note, so it is editable
+    whether it is pinned or not — which is the whole idea of typing
+    reference text into the window and expecting it to still be there.
     """
 
     def initWithPicker_item_(self, picker, item):
@@ -3165,6 +3817,12 @@ class EditorController(NSObject):
             NSBackingStoreBuffered, False)
         panel.setTitle_("Edit clipping")
         panel.setReleasedWhenClosed_(False)
+        # NSPanel hides itself whenever the application is not the
+        # active one, and this app is an accessory with no Dock icon,
+        # so it stops being active at the slightest provocation. The
+        # picker has guarded against this since 1.0; these three did
+        # not, and would vanish mid-use.
+        panel.setHidesOnDeactivate_(False)
         panel.setDelegate_(self)
         panel.setMinSize_(NSMakeSize(360, 240))
         content = panel.contentView()
@@ -3269,8 +3927,9 @@ HELP_INTRO = (
 HELP_SECTIONS = (
     ("Getting it open", (
         ("%s", "open the picker from anywhere"),
-        ("menu bar S", "the same thing, plus the ten newest clippings"),
-        ("⌘1 – ⌘9", "copy one of those straight from the menu"),
+        ("menu bar S", "Preferences, About, Help, Pause Capturing, Clear "
+                        "History and Quit. Deliberately no clippings: a menu "
+                        "opens with one click and no authentication"),
     )),
     ("Choosing a clipping", (
         ("click", "copy it and close — this is the whole point"),
@@ -3292,8 +3951,38 @@ HELP_SECTIONS = (
         ("today", "also yesterday, this week, last week, this month"),
         ("aug", "or august, or friday"),
         ("8/28", "or 2026-08-28, or 2026, or 12:55 pm"),
-        ("All / Pinned / Images / Text / URL",
+        ("All / Pinned / Notes / Images / Text / URL / Hidden",
          "narrow it by kind; each chip carries its own count"),
+        ("⌘⇧F", "keep whatever is in the search field as a chip of its own, "
+                 "under a name you choose. Selecting that chip and typing "
+                 "searches WITHIN it. Empty the field, select the chip and "
+                 "press ⌘⇧F again to remove it — the clippings stay"),
+    )),
+    ("Notes", (
+        ("⌘N", "write a note. It is an ordinary clipping you typed rather "
+                "than copied, so it searches, pins, filters and previews "
+                "like any other"),
+        ("kept", "notes are exempt from the item limit and the age limit "
+                  "whether pinned or not, and never show an expiry "
+                  "countdown. Reference text that vanished after thirty "
+                  "unread days would be no use to anybody"),
+        ("Edit…", "a note can be edited without pinning it first"),
+    )),
+    ("Hiding one", (
+        ("⌘H", "hide the selected clippings. They vanish from every list, "
+                "every count and every search — not greyed out, absent"),
+        ("Hidden", "the chip that shows them, behind Touch ID. It locks "
+                    "again the moment the picker closes"),
+        ("⌘H again", "under the Hidden chip, puts them back in the open"),
+        ("what is sealed", "the text, the preview, the picture and the "
+                            "thumbnail are encrypted; the source app is "
+                            "cleared and the fingerprint randomised. "
+                            "Copying the database gets an attacker nothing"),
+        ("what is not", "the key is a file in Application Support, readable "
+                         "only by you. Touch ID guards this window, not the "
+                         "key — anything already running as you could read "
+                         "it. Said plainly so the padlock is not read as "
+                         "more than it is"),
     )),
     ("Changing one", (
         ("Open", "a link opens in your browser; anything else opens as a "
@@ -3367,6 +4056,12 @@ class HelpController(NSObject):
         panel.setTitle_("About Stache")
         panel.setDelegate_(self)
         panel.setReleasedWhenClosed_(False)
+        # NSPanel hides itself whenever the application is not the
+        # active one, and this app is an accessory with no Dock icon,
+        # so it stops being active at the slightest provocation. The
+        # picker has guarded against this since 1.0; these three did
+        # not, and would vanish mid-use.
+        panel.setHidesOnDeactivate_(False)
         panel.setMinSize_(NSMakeSize(460, 360))
 
         scroll = NSScrollView.alloc().initWithFrame_(
@@ -3500,6 +4195,12 @@ class PrefsController(NSObject):
         panel.setTitle_("Stache Preferences")
         panel.setDelegate_(self)
         panel.setReleasedWhenClosed_(False)
+        # NSPanel hides itself whenever the application is not the
+        # active one, and this app is an accessory with no Dock icon,
+        # so it stops being active at the slightest provocation. The
+        # picker has guarded against this since 1.0; these three did
+        # not, and would vanish mid-use.
+        panel.setHidesOnDeactivate_(False)
         view = panel.contentView()
 
         def row(n):
@@ -3997,9 +4698,25 @@ class StacheApp(NSObject):
             image.setTemplate_(True)
             button.setImage_(image)
 
+        # No clippings in this menu. It used to list the ten newest with
+        # ⌘1 – ⌘9 against them, which put the contents of the history — the
+        # very thing the Hidden filter exists to keep out of sight — into a
+        # menu that opens with one click and no authentication. The picker
+        # is where clippings live.
         menu = NSMenu.alloc().initWithTitle_(APP_NAME)
+        # The delegate exists to hold the picker open while this menu is
+        # down — see menuWillOpen_.
         menu.setDelegate_(self)
-        self._dynamic_count = 0
+        about = menu.addItemWithTitle_action_keyEquivalent_(
+            "About Stache", "menuHelp:", "")
+        about.setTarget_(self)
+        prefs = menu.addItemWithTitle_action_keyEquivalent_(
+            "Preferences…", "menuPrefs:", ",")
+        prefs.setTarget_(self)
+        help_item = menu.addItemWithTitle_action_keyEquivalent_(
+            "Help…", "menuHelp:", "/")
+        help_item.setTarget_(self)
+        menu.addItem_(NSMenuItem.separatorItem())
         self.open_item = menu.addItemWithTitle_action_keyEquivalent_(
             "Open Stache", "menuOpen:", "")
         self.open_item.setTarget_(self)
@@ -4011,50 +4728,35 @@ class StacheApp(NSObject):
             "Clear History…", "menuClear:", "")
         clear.setTarget_(self)
         menu.addItem_(NSMenuItem.separatorItem())
-        prefs = menu.addItemWithTitle_action_keyEquivalent_(
-            "Preferences…", "menuPrefs:", ",")
-        prefs.setTarget_(self)
-        about = menu.addItemWithTitle_action_keyEquivalent_(
-            "About Stache & Help…", "menuHelp:", "/")
-        about.setTarget_(self)
-        menu.addItem_(NSMenuItem.separatorItem())
         quit_item = menu.addItemWithTitle_action_keyEquivalent_(
             "Quit Stache", "menuQuit:", "q")
         quit_item.setTarget_(self)
         self.status_item.setMenu_(menu)
         self.refreshMenu()
 
-    def menuNeedsUpdate_(self, menu):
-        """Rebuild the list of recent clippings at the top of the menu.
+    # -- the menu bar menu ------------------------------------------------
 
-        The newest few are worth reaching without opening the picker at all -
-        that is most recalls - so they are rebuilt every time the menu is
-        pulled down rather than kept in sync as clippings arrive.
+    def menuWillOpen_(self, menu):
+        """Opening this menu must not dismiss the picker.
+
+        The picker closes when it loses key focus, which is right for a
+        click into another application and wrong for a click on our own
+        menu bar item: reaching Preferences to change the layout meant
+        watching the picker vanish on the way, which reads as a crash.
         """
-        for _ in range(self._dynamic_count):
-            menu.removeItemAtIndex_(0)
-        self._dynamic_count = 0
-        items = self.store.items(limit=RECENT_IN_MENU)
-        if not items:
-            return
-        for index, item in enumerate(items):
-            entry = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-                _menu_title(item), "menuRecent:",
-                str(index + 1) if index < 9 else "")
-            entry.setKeyEquivalentModifierMask_(NSEventModifierFlagCommand)
-            entry.setTarget_(self)
-            entry.setTag_(item.id)
-            thumb = _menu_thumb(item)
-            if thumb is not None:
-                entry.setImage_(thumb)
-            menu.insertItem_atIndex_(entry, index)
-        menu.insertItem_atIndex_(NSMenuItem.separatorItem(), len(items))
-        self._dynamic_count = len(items) + 1
+        if getattr(self, "picker", None) is not None:
+            self.picker.holdOpen()
 
-    def menuRecent_(self, sender):
-        item = self.store.get(int(sender.tag()))
-        if item is not None:
-            self.copyToPasteboard_(item)
+    def menuDidClose_(self, menu):
+        """Release the hold a beat later.
+
+        Immediately would be too soon: choosing Preferences closes the menu
+        BEFORE the preferences window becomes key, and the resign delivered
+        in that gap would take the picker with it.
+        """
+        if getattr(self, "picker", None) is not None:
+            self.picker.performSelector_withObject_afterDelay_(
+                "_releaseHold:", None, 0.35)
 
     def refreshMenu(self):
         self.open_item.setTitle_(
@@ -4269,24 +4971,6 @@ def _menu_title(item):
     if len(text) > MENU_TITLE_CHARS:
         text = text[:MENU_TITLE_CHARS - 1] + "…"
     return text or "(empty)"
-
-
-def _menu_thumb(item):
-    """A postage-stamp of an image clipping, beside its menu entry."""
-    if item.kind != "image" or not item.thumb_path:
-        return None
-    if not os.path.exists(item.thumb_path):
-        return None
-    image = NSImage.alloc().initWithContentsOfFile_(item.thumb_path)
-    if image is None:
-        return None
-    size = image.size()
-    if size.width <= 0 or size.height <= 0:
-        return None
-    scale = min(28.0 / size.width, 18.0 / size.height)
-    image.setSize_(NSMakeSize(round(size.width * scale),
-                              round(size.height * scale)))
-    return image
 
 
 def _file_paths(pb):
