@@ -881,8 +881,10 @@ def test_render():
     else:
         titles = [str(picker.filter.labelForSegment_(i))
                   for i in range(picker.filter.segmentCount())]
-    check("every filter carries a count",
-          bool(titles) and all("(" in t for t in titles), ", ".join(titles))
+    check("every filter but the first carries a count",
+          bool(titles) and all("(" in t for t in titles[1:]), ", ".join(titles))
+    check("and [ ALL ] carries none — no count it could show would be right",
+          titles[0] == "[ ALL ]", titles[0])
     # The selection must not drift onto the pinned card when the list is
     # rebuilt — that is what made ⌫ ask about the wrong clipping.
     store.set_pinned(picker.grid.items()[-1].id, True)

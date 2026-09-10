@@ -70,7 +70,7 @@ Three layouts, set in Preferences, each remembering its own size and place:
 | ⌘⇧F | keep the current search as a filter, or remove the filter you are on |
 | ⌘/ | the full help |
 | Esc | close, clipboard untouched |
-| All / Pinned / Notes / Images / Text / URL / Hidden | the seven built-in filters, each carrying its count |
+| [ ALL ] / Pinned / Notes / Images / Text / URL / Hidden | the seven built-in filters; each count is exact, and [ ALL ] shows none |
 
 Picking does not close the picker and does not hand back the keyboard, so the
 sequence is **pick, Esc, ⌘V**.
@@ -119,13 +119,18 @@ expiry countdown.
 
 Seven filters are built in and always present, in this order:
 
-    All · Pinned · Notes · Images · Text · URL · Hidden
+    [ ALL ] · Pinned · Notes · Images · Text · URL · Hidden
 
 ⌘⇧F keeps whatever is in the search field as a filter of its own, under a name
 you choose. **It is appended after those seven**, and so is every filter you
 add after it, in the order you made them — the built-in filters never move.
 Selecting your filter and typing searches **within** it. To remove one: empty
 the field, select the filter, ⌘⇧F again — the clippings stay.
+
+Every filter but the first carries a count of what it holds, exact and
+unaffected by what you type — how many the search left is in the status line
+instead. **[ ALL ] shows no number**: counting the hidden clippings would
+contradict the list under it, and leaving them out would not be all.
 
 Saved filters live in preferences, not the database. When the filters no longer
 fit the width of the panel, the whole row becomes a popup menu carrying the

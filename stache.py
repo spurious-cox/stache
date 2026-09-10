@@ -405,7 +405,7 @@ History:
   1.0.0  First release.
 """
 
-APP_VERSION = "2.3.3"
+APP_VERSION = "2.4.0"
 COPYRIGHT = "© 2026 Tim McCoy"
 APP_NAME = "Stache"
 BUNDLE_ID = "com.timmccoy.stache"
@@ -2473,7 +2473,7 @@ class HeaderView(NSView):
 # The filters, in the order they appear. "All" stays: without it the
 # only way back to the whole list is to deselect a filter, and a segmented
 # control in select-one mode will not deselect.
-FILTER_KINDS = (("All", None), ("Pinned", "pinned"), ("Notes", "note"),
+FILTER_KINDS = (("[ ALL ]", None), ("Pinned", "pinned"), ("Notes", "note"),
                 ("Images", "image"), ("Text", "text"), ("URL", "url"),
                 ("Hidden", "hidden"))
 
@@ -3205,7 +3205,12 @@ class PickerController(NSObject):
             counts = self.app.store.counts("", [k for _l, k in self.filters])
         except Exception:
             return
-        titles = ["%s (%d)" % (label, counts.get(kind or "all", 0))
+        # All carries no number. Whatever it said would be arguable: count
+        # the hidden clippings and it contradicts the list underneath it,
+        # leave them out and it is not "all". Every other filter counts one
+        # thing exactly, and can say so without qualification.
+        titles = [label if kind is None
+                  else "%s (%d)" % (label, counts.get(kind or "all", 0))
                   for label, kind in self.filters]
         if getattr(self, "compact_filter", False):
             # Rebuilding the menu loses the selection, so it is put back.
@@ -4065,9 +4070,15 @@ HELP_SECTIONS = (
         ("today", "also yesterday, this week, last week, this month"),
         ("aug", "or august, or friday"),
         ("8/28", "or 2026-08-28, or 2026, or 12:55 pm"),
-        ("All / Pinned / Notes / Images / Text / URL / Hidden",
-         "the seven built-in filters, in that order; each carries its own "
-         "count. They are always there and cannot be removed"),
+        ("[ ALL ] / Pinned / Notes / Images / Text / URL / Hidden",
+         "the seven built-in filters, in that order. They are always there "
+         "and cannot be removed"),
+        ("the numbers", "each filter says how many clippings it holds, and "
+                         "does not move as you type — how many the search "
+                         "left is in the status line instead. [ ALL ] shows "
+                         "no number: counting the hidden ones would "
+                         "contradict the list under it, and leaving them out "
+                         "would not be all"),
         ("⌘⇧F", "keep whatever is in the search field as a filter of its own, "
                  "under a name you choose. It is APPENDED after the seven "
                  "built-in filters, and so is every one after it, in the order "
