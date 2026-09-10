@@ -473,6 +473,18 @@ def test_saved_filters():
     check("and it appears after the built-in chips",
           labels[:len(built_in)] == built_in and labels[-1] == "Recipes",
           str(labels))
+    # The chips are chosen by room, not by count: the first saved filter used
+    # to tip a two-thousand-point strip into the popup.
+    with_one = stache.filter_list()
+    check("eight chips still fit a wide strip",
+          stache.chips_fit(2204, with_one), "2204pt")
+    check("and a column still gets the popup",
+          not stache.chips_fit(stache.COLUMN_CONTENT_W, with_one),
+          "%dpt" % stache.COLUMN_CONTENT_W)
+    check("a long name is allowed for at its longest",
+          not stache.chips_fit(820, with_one + [("a very long filter name", "x")]),
+          "820pt")
+
     stache.set_saved_filters([])
     check("removing it leaves the built-ins alone",
           [l for l, _k in stache.filter_list()] == built_in,
@@ -834,6 +846,15 @@ def test_render():
           ("that image" if picked.kind == "image" else "“") in said, said)
     # 1.10.0 moved the search field to the far right, so the status line now
     # starts at the left edge and the chips sit between the two.
+    # The panel is created at a placeholder 820pt and only takes its real
+    # width afterwards, so the chips must be decided on the planned width.
+    check("the filter is decided by the width the panel will have",
+          picker.plannedWidth() >= 1000,
+          "built at %.0f, planned %.0f"
+          % (picker.panel.contentView().bounds().size.width,
+             picker.plannedWidth()))
+    check("so a wide strip keeps its chips",
+          not picker.compact_filter, "compact=%s" % picker.compact_filter)
     check("the status line is left of the filter chips",
           picker.status.frame().origin.x < picker.filter.frame().origin.x
           and (picker.status.frame().origin.x

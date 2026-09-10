@@ -405,7 +405,7 @@ History:
   1.0.0  First release.
 """
 
-APP_VERSION = "2.3.0"
+APP_VERSION = "2.3.1"
 COPYRIGHT = "© 2026 Tim McCoy"
 APP_NAME = "Stache"
 BUNDLE_ID = "com.timmccoy.stache"
@@ -2477,9 +2477,21 @@ FILTER_KINDS = (("All", None), ("Pinned", "pinned"), ("Notes", "note"),
                 ("Images", "image"), ("Text", "text"), ("URL", "url"),
                 ("Hidden", "hidden"))
 
-# Above this many chips the segmented control stops fitting the 820pt grid,
-# so the whole filter becomes the popup the column layout already uses.
-CHIP_LIMIT = 7
+def chips_fit(width, filters):
+    """Would these chips fit the header at this width?
+
+    Counting them was the wrong test. It was written when there were five
+    built-ins and a limit of seven, so the FIRST saved filter tipped a strip
+    two thousand points wide into the popup — plenty of room, no chips. What
+    matters is the room, so that is what is measured.
+
+    Each label is allowed for at its longest: the count beside it is not
+    known until the clippings are read, and a chip that fits empty and not
+    at "(128)" would be worse than one that never appeared.
+    """
+    room = width - (12 + 90 + 12 + 34 + SEARCH_W + 12)
+    need = sum(20 + 7.2 * (len(label) + 5) for label, _kind in filters)
+    return need <= room
 
 
 def saved_filters():
@@ -2656,13 +2668,19 @@ class PickerController(NSObject):
         self.search.setAutoresizingMask_(NSViewMinXMargin)
         header.addSubview_(self.search)
 
-        # Five chips need about 380pt. A column has nowhere near that, so
-        # there it becomes one popup carrying the same choices and the same
-        # counts. Saved filters land in the same control, and past CHIP_LIMIT
-        # of them the wide layout runs out of room too, so it takes the popup
-        # as well rather than shrinking every label to nothing.
+        # A column has nowhere near the room for chips, so there the filter
+        # becomes one popup carrying the same choices and the same counts.
+        # A wide layout keeps the chips for as long as they fit.
+        #
+        # Measured against the width the panel will END UP at, not the one it
+        # has right now: it is created at a placeholder 820pt and only takes
+        # its real width afterwards, from the saved frame or the share of the
+        # screen. Asking `size` here decided a two-thousand-point strip's
+        # filter as though it were 820 wide, and hid the chips on a panel
+        # with room for twice as many.
         self.filters = filter_list()
-        self.compact_filter = column or len(self.filters) > CHIP_LIMIT
+        self.compact_filter = column or not chips_fit(self.plannedWidth(),
+                                                      self.filters)
         if self.compact_filter:
             self.filter = NSPopUpButton.alloc().initWithFrame_pullsDown_(
                 NSMakeRect(12, 10, 150, 24), False)
@@ -2891,6 +2909,29 @@ class PickerController(NSObject):
                     f.origin.y <= mouse.y <= f.origin.y + f.size.height):
                 return candidate
         return NSScreen.mainScreen()
+
+    def plannedWidth(self):
+        """How wide this panel is really going to be.
+
+        The saved frame wins, because that is what show() restores; failing
+        that, the share of the screen this layout is entitled to.
+        """
+        if self.isColumn():
+            return COLUMN_CONTENT_W
+        saved = defaults().objectForKey_(self.frameKey())
+        if saved:
+            try:
+                width = NSRectFromString(saved).size.width
+                if width > 0:
+                    return width
+            except Exception:
+                pass
+        screen = self._activeScreen()
+        if self.isStrip():
+            return strip_frame(screen.visibleFrame(),
+                               self._dockReserve_(screen),
+                               pref(DEF_STRIP_PCT)).size.width
+        return self.panel.frame().size.width
 
     def _parkAboveDock(self):
         """Left edge, just above the Dock, a share of the screen wide.
