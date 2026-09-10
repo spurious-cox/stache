@@ -61,7 +61,7 @@ Three layouts, set in Preferences, each remembering its own size and place:
 | arrows | move the selection |
 | Return | copy the selected card |
 | Space | Quick Look — text or image, follows the arrow keys |
-| ⌫ | delete for good — asks once for more than one |
+| ⌫ | delete for good — refused while pinned; asks once for more than one |
 | type anything | jumps into the search field |
 | ⌘0 | put the panel back where it belongs |
 | ⌘N | write a note |

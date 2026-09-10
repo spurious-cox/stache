@@ -405,7 +405,7 @@ History:
   1.0.0  First release.
 """
 
-APP_VERSION = "2.2.1"
+APP_VERSION = "2.3.0"
 COPYRIGHT = "© 2026 Tim McCoy"
 APP_NAME = "Stache"
 BUNDLE_ID = "com.timmccoy.stache"
@@ -2519,7 +2519,8 @@ FILTER_X = 300                            # where the chips start, when there
 SOURCE_ICON = 16                          # the source app badge on a card
 
 HINTS = ("click copy", "⌥click select", "⇧click range", "⌘click add",
-         "↵ copy", "Space Quick Look", "⌫ delete", "type to search",
+         "↵ copy", "Space Quick Look", "⌫ delete unless pinned",
+         "type to search",
          "⌘0 reset place", "⌘N note", "⌘H hide", "⌘⇧F keep search",
          "⌘/ help", "esc closes")
 
@@ -2678,6 +2679,8 @@ class PickerController(NSObject):
         self.filter.setTarget_(self)
         self.filter.setAction_("filterChanged:")
         header.addSubview_(self.filter)
+
+        self.installShortcuts()
 
         self.help_button = NSButton.alloc().initWithFrame_(
             NSMakeRect(size.width - 12 - SEARCH_W - 34, 9, 26, 24))
@@ -3368,6 +3371,48 @@ class PickerController(NSObject):
     def thumbnailRebuilt_name_(self, item, name):
         self.app.store.set_thumb(item.id, name)
 
+    def installShortcuts(self):
+        """Catch the ⌘ shortcuts before the focused control eats them.
+
+        They used to live only in the grid's keyDown_, which meant they
+        worked only while the GRID had focus — and typing deliberately moves
+        focus to the search field. So the natural moment to press ⌘⇧F, right
+        after typing the search you want to keep, was exactly the moment it
+        stopped working. Same for ⌘N, ⌘H and ⌘0. A local monitor sees the
+        key first whatever holds focus. Local, not global: a global monitor
+        would need the Accessibility grant this app is proud not to want.
+        """
+        def handler(event):
+            if not self.panel.isKeyWindow():
+                return event
+            if not (event.modifierFlags() & NSEventModifierFlagCommand):
+                return event
+            key = (event.charactersIgnoringModifiers() or "").lower()
+            if key == "f":
+                self.gridDidAskToSaveFilter()
+            elif key == "n":
+                self.gridDidAskForNewNote()
+            elif key == "h":
+                chosen = self.grid.selectedItems()
+                if not chosen:
+                    return event
+                self.gridDidAskToHide_(chosen)
+            elif key == "0":
+                self.gridDidAskToReset()
+            elif key in ("/", "?"):
+                self.gridDidAskForHelp()
+            else:
+                return event
+            return None
+
+        self._shortcuts = NSEvent.addLocalMonitorForEventsMatchingMask_handler_(
+            NSEventMaskKeyDown, handler)
+
+    def removeShortcuts(self):
+        if getattr(self, "_shortcuts", None) is not None:
+            NSEvent.removeMonitor_(self._shortcuts)
+            self._shortcuts = None
+
     def gridDidType_(self, event):
         self.panel.makeFirstResponder_(self.search)
         self.search.currentEditor().keyDown_(event)
@@ -3965,7 +4010,8 @@ HELP_SECTIONS = (
         ("↵", "copy the selected clipping and close"),
         ("← → ↑ ↓", "move the selection"),
         ("Space", "Quick Look the selected clipping — text or image. The arrow keys keep working, and the preview follows them"),
-        ("⌫", "delete the selected clipping for good"),
+        ("⌫", "delete the selected clipping for good — refused while it is "
+                "pinned, so unpin it first"),
         ("right-click", "Quick Look · Copy · Open · Open With ▸ · Reveal in Finder · "
                         "Pin · Delete"),
         ("⌘0", "put the picker back where it calculated it belonged, "
@@ -4910,6 +4956,7 @@ class StacheApp(NSObject):
             # alive, so anything still holding that controller — a pending
             # performSelector, a timer — can put it back on screen, and two
             # pickers end up visible at once.
+            old.removeShortcuts()
             old.panel.setDelegate_(None)
             old.panel.orderOut_(None)
             old.panel.close()
