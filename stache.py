@@ -405,7 +405,7 @@ History:
   1.0.0  First release.
 """
 
-APP_VERSION = "2.2.0"
+APP_VERSION = "2.2.1"
 COPYRIGHT = "© 2026 Tim McCoy"
 APP_NAME = "Stache"
 BUNDLE_ID = "com.timmccoy.stache"
@@ -542,7 +542,7 @@ DEF_STRIP_PCT = "StacheStripWidthPercent"  # strip width, % of the screen
 DEF_CARD_SIZE = "StacheCardSize"          # "small", "medium" or "large"
 DEF_FILTERS = "StacheFilters"             # saved searches, as a JSON list
 
-# Control-Option-Command-Space, chosen by Tim.  49 is the Space key.
+# Control-Option-Command-Space.  49 is the Space key.
 DEFAULT_HOTKEY_CODE = 49
 DEFAULT_HOTKEY_MODS = 0x1000 | 0x0800 | 0x0100      # control | option | command
 
@@ -2880,7 +2880,7 @@ class PickerController(NSObject):
             defaults().persistentDomainForName_("com.apple.dock"))
 
     def _activeScreen(self):
-        """The screen the pointer is on — where Tim is actually working."""
+        """The screen the pointer is on — where the work is happening."""
         mouse = NSEvent.mouseLocation()
         for candidate in NSScreen.screens():
             f = candidate.frame()
@@ -3948,15 +3948,15 @@ HELP_INTRO = (
     "The name is the joke. A stache is where you stash things, and the two "
     "words sound identical, so Stache is the place your clipboard gets "
     "stashed and recalled from. The moustaches on the icon are that pun made "
-    "visible — and the Olde English S is Tim's own lettering."
+    "visible — and the Olde English S is my own lettering."
 )
 
 HELP_SECTIONS = (
     ("Getting it open", (
         ("%s", "open the picker from anywhere"),
-        ("menu bar S", "Preferences, About, Help, Pause Capturing, Clear "
-                        "History and Quit. Deliberately no clippings: a menu "
-                        "opens with one click and no authentication"),
+        ("menu bar S", "About, Preferences, Help, Open, Pause Capturing, "
+                        "Clear History and Quit. Deliberately no clippings: a "
+                        "menu opens with one click and no authentication"),
     )),
     ("Choosing a clipping", (
         ("click", "copy it and close — this is the whole point"),
