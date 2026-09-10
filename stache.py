@@ -405,7 +405,7 @@ History:
   1.0.0  First release.
 """
 
-APP_VERSION = "2.3.1"
+APP_VERSION = "2.3.2"
 COPYRIGHT = "© 2026 Tim McCoy"
 APP_NAME = "Stache"
 BUNDLE_ID = "com.timmccoy.stache"
@@ -4066,11 +4066,18 @@ HELP_SECTIONS = (
         ("aug", "or august, or friday"),
         ("8/28", "or 2026-08-28, or 2026, or 12:55 pm"),
         ("All / Pinned / Notes / Images / Text / URL / Hidden",
-         "narrow it by kind; each chip carries its own count"),
+         "the seven built-in chips, in that order; each carries its own "
+         "count. They are always there and cannot be removed"),
         ("⌘⇧F", "keep whatever is in the search field as a chip of its own, "
-                 "under a name you choose. Selecting that chip and typing "
-                 "searches WITHIN it. Empty the field, select the chip and "
-                 "press ⌘⇧F again to remove it — the clippings stay"),
+                 "under a name you choose. It is APPENDED after the seven "
+                 "built-in chips, and so is every one after it, in the order "
+                 "you made them. Selecting that chip and typing searches "
+                 "WITHIN it. Empty the field, select the chip and press ⌘⇧F "
+                 "again to remove it — the clippings stay"),
+        ("too many to fit", "the whole row becomes one popup menu, carrying "
+                             "the same chips and the same counts. It is the "
+                             "room that decides, not the number, so a wide "
+                             "strip holds far more than a column"),
     )),
     ("Notes", (
         ("⌘N", "write a note. It is an ordinary clipping you typed rather "

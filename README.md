@@ -23,7 +23,8 @@ The name is the joke: a *stache* is where you *stash* things.
 ## New in 2
 
 * **Notes** — reference text you type, kept as a clipping (⌘N).
-* **Filters made on the fly** — a search you like becomes a chip (⌘⇧F).
+* **Filters made on the fly** — a search you like becomes a chip of its
+  own, appended after the built-in ones (⌘⇧F).
 * **Hidden clippings** — sealed out of every list, behind Touch ID (⌘H).
 * **Newest first, everywhere.** Pinned clippings no longer jump the queue, so
   the picker opens on what you just copied. Pinning or hiding one counts as
@@ -69,7 +70,7 @@ Three layouts, set in Preferences, each remembering its own size and place:
 | ⌘⇧F | keep the current search as a chip, or remove the chip you are on |
 | ⌘/ | the full help |
 | Esc | close, clipboard untouched |
-| All / Pinned / Notes / Images / Text / URL / Hidden | filter by kind, each chip carrying its count |
+| All / Pinned / Notes / Images / Text / URL / Hidden | the seven built-in chips, each carrying its count |
 
 Picking does not close the picker and does not hand back the keyboard, so the
 sequence is **pick, Esc, ⌘V**.
@@ -116,12 +117,20 @@ expiry countdown.
 
 ## Filters made on the fly
 
-⌘⇧F keeps whatever is in the search field as a chip of its own, under a name
-you choose. Selecting that chip and typing searches **within** it. To remove
-one: empty the field, select the chip, ⌘⇧F again — the clippings stay.
+Seven chips are built in and always present, in this order:
 
-Saved filters live in preferences, not the database. Past seven chips the row
-becomes a popup.
+    All · Pinned · Notes · Images · Text · URL · Hidden
+
+⌘⇧F keeps whatever is in the search field as a chip of its own, under a name
+you choose. **It is appended after those seven**, and so is every filter you
+add after it, in the order you made them — the built-in chips never move.
+Selecting your chip and typing searches **within** it. To remove one: empty
+the field, select the chip, ⌘⇧F again — the clippings stay.
+
+Saved filters live in preferences, not the database. When the chips no longer
+fit the width of the panel, the whole row becomes a popup menu carrying the
+same choices and counts — the room decides, not the number, so a wide strip
+holds far more of them than a column.
 
 ## Hidden clippings
 
