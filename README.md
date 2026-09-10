@@ -181,9 +181,17 @@ Defaults: large cards, strip at 60%, ⌃⌥⌘Space, 500 items, 30 days, images 
         blobs/             one PNG per image clipping
         thumbs/            its thumbnail
 
+    exports/           text written out so other apps can open it
+
 Image clippings are ordinary PNGs, so Open and Reveal in Finder work straight
-from the picker. Nothing leaves the Mac, and nothing is encrypted — the
-database is readable by anything running as you.
+from the picker. Nothing leaves the Mac, and — apart from hidden clippings —
+nothing is encrypted: the database is readable by anything running as you.
+
+**Deleting a clipping deletes what it left on disk**: its PNG, its thumbnail
+and any exported copy of its text, and the database is vacuumed so the row's
+bytes are not left in a freed page. Hiding one deletes its export too, since
+that copy is the plaintext. Exports with no clipping behind them are cleared
+at launch.
 
 ## What is not recorded
 

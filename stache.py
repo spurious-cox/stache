@@ -405,7 +405,7 @@ History:
   1.0.0  First release.
 """
 
-APP_VERSION = "2.4.0"
+APP_VERSION = "2.5.0"
 COPYRIGHT = "© 2026 Tim McCoy"
 APP_NAME = "Stache"
 BUNDLE_ID = "com.timmccoy.stache"
@@ -521,6 +521,11 @@ SUPPORT_DIR = os.path.expanduser("~/Library/Application Support/Stache")
 BLOB_DIR = os.path.join(SUPPORT_DIR, "blobs")
 THUMB_DIR = os.path.join(SUPPORT_DIR, "thumbs")
 EXPORT_DIR = os.path.join(SUPPORT_DIR, "exports")   # text written out to open
+
+
+def export_path(item_id):
+    """Where a text clipping is written so another application can open it."""
+    return os.path.join(EXPORT_DIR, "clipping-%d.txt" % int(item_id))
 DB_PATH = os.path.join(SUPPORT_DIR, "stache.sqlite3")
 AGENT_PLIST = os.path.expanduser(
     "~/Library/LaunchAgents/%s.plist" % BUNDLE_ID)
@@ -979,6 +984,7 @@ class Store(object):
         self.db.commit()
         if self.vault.exists():
             self.reseal_damaged()
+        self.sweep_exports()
 
     def _migrate(self):
         """Add the stamp column to a database written before 1.4.0, and fill
@@ -1334,6 +1340,21 @@ class Store(object):
         self.db.commit()
 
     def delete(self, item_ids):
+        """Delete the rows AND everything on disk that describes them.
+
+        Three kinds of debris, not one. The blob and its thumbnail were
+        always cleaned up; the EXPORT was not. A text clipping opened with
+        Open or Open With is written out to exports/clipping-<id>.txt so
+        another application can read it, and that copy outlived the clipping
+        by any length of time — 37 of them were sitting in Tim's support
+        directory for clippings deleted weeks earlier.
+
+        Then the database itself: SQLite marks a deleted row's pages free
+        and leaves the bytes in them, so the text is still in the file until
+        something reuses the page. VACUUM rewrites the file without them.
+        Cheap here, because the pictures live outside the database and it
+        stays small.
+        """
         if not item_ids:
             return
         marks = ",".join("?" * len(item_ids))
@@ -1345,6 +1366,10 @@ class Store(object):
         for blob, thumb in rows:
             _unlink(os.path.join(BLOB_DIR, blob) if blob else None)
             _unlink(os.path.join(THUMB_DIR, thumb) if thumb else None)
+        for item_id in item_ids:
+            _unlink(export_path(item_id))
+        self.db.execute("VACUUM")
+        self.db.commit()
 
     def clear(self, keep_pinned=True):
         sql = "SELECT id FROM items"
@@ -1385,6 +1410,9 @@ class Store(object):
                         fh.write(sealed)
             if thumb:
                 _unlink(os.path.join(THUMB_DIR, thumb))
+            # The export is the clipping's text in the clear. Sealing the
+            # row and leaving that behind would be sealing the front door.
+            _unlink(export_path(item_id))
             self.db.execute(
                 "UPDATE items SET hidden = 1, body = ?, preview = ?, "
                 "thumb = NULL, app = '', digest = ?, changed = ? "
@@ -1436,6 +1464,32 @@ class Store(object):
             done += 1
         self.db.commit()
         return done
+
+    def sweep_exports(self):
+        """Delete exports with no clipping behind them, or a hidden one.
+
+        Versions before 2.5.0 never removed these, so a support directory
+        holds the text of everything ever opened, including clippings
+        deleted long ago and clippings since hidden.
+        """
+        try:
+            names = os.listdir(EXPORT_DIR)
+        except OSError:
+            return 0
+        alive = {r[0] for r in self.db.execute(
+            "SELECT id FROM items WHERE hidden = 0")}
+        swept = 0
+        for name in names:
+            if not (name.startswith("clipping-") and name.endswith(".txt")):
+                continue
+            try:
+                item_id = int(name[len("clipping-"):-len(".txt")])
+            except ValueError:
+                continue
+            if item_id not in alive:
+                _unlink(os.path.join(EXPORT_DIR, name))
+                swept += 1
+        return swept
 
     def reseal_damaged(self):
         """Seal any hidden row whose text is sitting there in the clear.
@@ -3794,7 +3848,7 @@ def openable_path(item):
         return item.blob_path if item.blob_path and \
             os.path.exists(item.blob_path) else None
     text = item.body or item.preview or ""
-    path = os.path.join(EXPORT_DIR, "clipping-%d.txt" % item.id)
+    path = export_path(item.id)
     try:
         os.makedirs(EXPORT_DIR, exist_ok=True)
         with open(path, "w", encoding="utf-8") as fh:

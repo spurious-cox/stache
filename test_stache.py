@@ -633,6 +633,45 @@ def _refuses(vault, blob):
         return True
 
 
+def test_disk_cleanup():
+    """Deleting a clipping takes everything it left on disk with it."""
+    print("disk cleanup")
+    vault = stache.Vault(os.path.join(SCRATCH, "sweep.key"))
+    store = stache.Store(os.path.join(SCRATCH, "sweep.sqlite3"), vault=vault)
+    keep = store.add_text("a clipping worth keeping", "Notes")
+    doomed = store.add_text("a clipping about to go", "Notes")
+    secret = store.add_text("worth hiding", "Notes")
+    for item_id in (keep, doomed, secret):
+        with open(stache.export_path(item_id), "w") as fh:
+            fh.write("written out so another app could open it")
+
+    store.delete([doomed])
+    check("deleting a clipping deletes its export",
+          not os.path.exists(stache.export_path(doomed)),
+          stache.export_path(doomed))
+    check("and leaves the others alone",
+          os.path.exists(stache.export_path(keep)), "kept")
+
+    store.hide([secret])
+    check("hiding a clipping deletes its export too — it was the plaintext",
+          not os.path.exists(stache.export_path(secret)),
+          stache.export_path(secret))
+
+    orphan = stache.export_path(999999)
+    with open(orphan, "w") as fh:
+        fh.write("left behind by a version that never cleaned up")
+    check("the sweep clears exports with no clipping behind them",
+          store.sweep_exports() >= 1 and not os.path.exists(orphan), orphan)
+    check("and still leaves a live clipping's export",
+          os.path.exists(stache.export_path(keep)), "kept")
+
+    image = store.add_image(sample_png(40, 40, (0.2, 0.6, 0.2)), 40, 40, "Test")
+    item = store.get(image)
+    blob = item.blob_path
+    store.delete([image])
+    check("deleting an image deletes its PNG", not os.path.exists(blob), blob)
+
+
 def test_order():
     """Newest first everywhere, and pinning or hiding counts as newest."""
     print("order")
@@ -1169,6 +1208,7 @@ if __name__ == "__main__":
         test_saved_filters()
         test_notes()
         test_hidden()
+        test_disk_cleanup()
         test_order()
         test_render()
     finally:
