@@ -22,10 +22,20 @@ os.environ["HOME"] = os.environ.get("HOME")          # unchanged; see below
 import stache
 
 # Point every path at the scratch directory before anything creates files.
+# EVERY path: exports was missed until 2.5.0, and the export sweep added
+# there promptly deleted 41 files out of the real support directory the
+# first time the suite ran. A test that can reach live data will.
 stache.SUPPORT_DIR = SCRATCH
 stache.BLOB_DIR = os.path.join(SCRATCH, "blobs")
 stache.THUMB_DIR = os.path.join(SCRATCH, "thumbs")
+stache.EXPORT_DIR = os.path.join(SCRATCH, "exports")
 stache.DB_PATH = os.path.join(SCRATCH, "stache.sqlite3")
+
+_real = os.path.expanduser("~/Library/Application Support/Stache")
+for _name in ("SUPPORT_DIR", "BLOB_DIR", "THUMB_DIR", "EXPORT_DIR", "DB_PATH"):
+    if getattr(stache, _name).startswith(_real):
+        raise SystemExit("test_stache: %s still points at live data (%s)"
+                         % (_name, getattr(stache, _name)))
 
 from AppKit import (NSApplication, NSBitmapImageFileTypePNG, NSColor,
                     NSGraphicsContext, NSMakeRect)
