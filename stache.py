@@ -92,7 +92,7 @@ History:
 
          Quartz is bundled as a PACKAGE, not an include: py2app compiles an
          include into python314.zip where codesign cannot reach it, which is
-         how PixProFitText shipped 18 unsigned dylibs and had the archive
+         how a bundle can ship unsigned dylibs and have the archive
          rejected. Checked after building — nothing unsignable left in the
          zip, ten Quartz extensions extracted, none unsigned.
   1.15.0 Three things a clipping could not do.
@@ -181,8 +181,8 @@ History:
   1.12.3 Changing a preference no longer makes the picker disappear.
          rebuildPicker ordered the old panel out and built a replacement
          that nobody ever showed, so every change in Preferences looked like
-         a crash — most convincingly in column layout, where Tim reported
-         exactly that. It now comes straight back, carrying the search text
+         a crash, most convincingly in column layout. It now comes straight
+         back, carrying the search text
          and filter that were in force, so the change is visible as it is
          made. It is ordered FRONT rather than made key: the change came
          from the Preferences window and focus belongs there.
@@ -2649,8 +2649,8 @@ class PickerController(NSObject):
         return self.layoutMode() == "column"
 
     def headerHeight(self):
-        # A column is too narrow for one row of status, five filters and a
-        # search field — everything came out truncated. It gets two rows.
+        # A column is too narrow for one row of status, the filters and a
+        # search field without truncating them. It gets two rows.
         return COLUMN_HEADER_H if self.isColumn() else HEADER_H
 
     def frameKey(self):
@@ -4696,8 +4696,8 @@ def decorate_titlebar(window, compact=False):
     name.setFont_(NSFont.boldSystemFontOfSize_(13))
     name.setTextColor_(NSColor.labelColor())
     # Re-measure. _bar_label sized the field to fit 11pt regular; the text
-    # is now 13pt BOLD and no longer fits the frame it was given, so the
-    # name came out clipped.
+    # is now 13pt BOLD and no longer fits the frame it was given, which
+    # would clip the name.
     name.sizeToFit()
     icon = own_icon()
     icon_w = 16 if icon is not None else 0

@@ -111,8 +111,8 @@ READMEEOF
 # hdiutil intermittently returns "Resource busy" on a folder that was
 # written seconds earlier — something (Spotlight, on-access AV) still has it
 # open. It clears on its own, so retry rather than abandoning a build whose
-# app is already notarized and stapled. This failed 1.0.2 the first time and
-# succeeded on the very next attempt.
+# app is already notarized and stapled. In practice it succeeds on the
+# next attempt.
 for attempt in 1 2 3 4 5; do
     if hdiutil create -volname "$VOLNAME" -srcfolder dist/dmg -ov \
             -format UDZO "$DMG" >/dev/null 2>/tmp/stache_hdiutil.err; then

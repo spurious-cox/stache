@@ -38,7 +38,7 @@ OPTIONS = {
     "excludes": ["PIL", "Pillow", "tkinter", "test", "unittest"],
     # Quartz as a PACKAGE, not an include. py2app compiles an include into
     # python314.zip, and codesign cannot reach inside a zip — which is how
-    # PixProFitText shipped 18 unsigned dylibs and had the whole archive
+    # a bundle can ship unsigned dylibs and have the whole archive
     # rejected by Apple. A package is copied out as a real directory tree
     # where the Mach-O walk in build.sh signs everything it holds.
     # Security and LocalAuthentication are what the hidden filter is built
