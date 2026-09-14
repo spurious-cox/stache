@@ -405,7 +405,7 @@ History:
   1.0.0  First release.
 """
 
-APP_VERSION = "2.5.2"
+APP_VERSION = "2.5.3"
 COPYRIGHT = "© 2026 Tim McCoy"
 APP_NAME = "Stache"
 BUNDLE_ID = "com.timmccoy.stache"
@@ -4869,6 +4869,41 @@ class StacheApp(NSObject):
         return 1
 
     # -- status item ------------------------------------------------------
+
+    def _keyWindowUndoManager(self):
+        window = NSApp.keyWindow()
+        return window.undoManager() if window is not None else None
+
+    def undo_(self, sender):
+        """Undo in whichever window has focus.
+
+        Nothing in this app's responder chain answered undo: — measured with
+        targetForAction:, which came back nil while the key window's undo
+        manager had edits waiting. That mismatch is the beep: the menu item
+        fires and no one handles it. A document-based app gets this link for
+        free from NSDocument; an agent with plain windows does not, so the
+        app delegate, last in the chain, supplies it. Both the note editor
+        and the single-line fields register their edits with the window's
+        manager, so this one route covers both.
+        """
+        manager = self._keyWindowUndoManager()
+        if manager is not None and manager.canUndo():
+            manager.undo()
+
+    def redo_(self, sender):
+        manager = self._keyWindowUndoManager()
+        if manager is not None and manager.canRedo():
+            manager.redo()
+
+    def validateMenuItem_(self, item):
+        action = str(item.action() or "")
+        if action in ("undo:", "redo:"):
+            manager = self._keyWindowUndoManager()
+            if manager is None:
+                return False
+            return bool(manager.canUndo() if action == "undo:"
+                        else manager.canRedo())
+        return True
 
     def _installEditMenu(self):
         """Give the standard edit commands their key equivalents.
