@@ -22,6 +22,13 @@ The name is the joke: a *stache* is where you *stash* things.
 
 ## New in 2
 
+* **⌘V, ⌘C, ⌘X and ⌘A now work in every text field** (2.5.1). A background app
+  owns no menu bar, and without a main menu there was nothing for macOS to
+  match those keystrokes against — so a note could be typed into but not
+  pasted into.
+* **⌘Z undoes an edit in a note or clipping** (2.5.2). A text view keeps no
+  undo history unless it is asked to.
+
 * **Notes** — reference text you type, kept as a clipping (⌘N).
 * **Filters made on the fly** — a search you like becomes a filter of its
   own, appended after the built-in ones (⌘⇧F).

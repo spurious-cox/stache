@@ -405,7 +405,7 @@ History:
   1.0.0  First release.
 """
 
-APP_VERSION = "2.5.0"
+APP_VERSION = "2.5.2"
 COPYRIGHT = "© 2026 Tim McCoy"
 APP_NAME = "Stache"
 BUNDLE_ID = "com.timmccoy.stache"
@@ -4007,6 +4007,10 @@ class EditorController(NSObject):
         scroll.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
         text = NSTextView.alloc().initWithFrame_(scroll.bounds())
         text.setEditable_(True)
+        # NSTextView keeps no undo history unless asked: allowsUndo is NO by
+        # default, so Cmd-Z reached the view (once there was a menu to match
+        # it) and found nothing to undo.
+        text.setAllowsUndo_(True)
         text.setRichText_(False)
         text.setFont_(NSFont.monospacedSystemFontOfSize_weight_(12, 0.0))
         text.setString_(item.body or item.preview or "")
@@ -4835,6 +4839,8 @@ class StacheApp(NSObject):
         self.last_change = int(NSPasteboard.generalPasteboard().changeCount())
         self.store.prune(pref(DEF_MAX_ITEMS), pref(DEF_MAX_DAYS))
 
+        self._installEditMenu()
+
         self.picker = PickerController.alloc().initWithApp_(self)
         self.prefs = PrefsController.alloc().initWithApp_(self)
         self.help = HelpController.alloc().initWithApp_(self)
@@ -4863,6 +4869,57 @@ class StacheApp(NSObject):
         return 1
 
     # -- status item ------------------------------------------------------
+
+    def _installEditMenu(self):
+        """Give the standard edit commands their key equivalents.
+
+        Cmd-V is not handled by a text view. AppKit matches it against the
+        main menu and sends `paste:` down the responder chain from there, so
+        an app with no main menu has nothing to match against and the
+        keystroke never arrives. This app is LSUIElement, which owns no menu
+        bar, and had no main menu at all -- so the note editor could be typed
+        into but not pasted into, and the same was true of every other text
+        field in the app.
+
+        The menu is never drawn. It exists so the key equivalents resolve.
+        The items target nil, which means "whatever is first responder".
+        """
+        main = NSMenu.alloc().init()
+
+        app_item = NSMenuItem.alloc().init()
+        main.addItem_(app_item)
+        app_menu = NSMenu.alloc().initWithTitle_(APP_NAME)
+        app_menu.addItemWithTitle_action_keyEquivalent_(
+            "Quit " + APP_NAME, "terminate:", "q")
+        app_item.setSubmenu_(app_menu)
+
+        edit_item = NSMenuItem.alloc().init()
+        main.addItem_(edit_item)
+        edit = NSMenu.alloc().initWithTitle_("Edit")
+        for title, action, key in (("Undo", "undo:", "z"),
+                                   ("Redo", "redo:", "Z"),
+                                   (None, None, None),
+                                   ("Cut", "cut:", "x"),
+                                   ("Copy", "copy:", "c"),
+                                   ("Paste", "paste:", "v"),
+                                   ("Paste and Match Style",
+                                    "pasteAsPlainText:", "V"),
+                                   (None, None, None),
+                                   ("Select All", "selectAll:", "a")):
+            if title is None:
+                edit.addItem_(NSMenuItem.separatorItem())
+                continue
+            item = edit.addItemWithTitle_action_keyEquivalent_(
+                title, action, key)
+            # An uppercase key equivalent carries the shift itself, but the
+            # mask is set explicitly so the shortcut reads correctly wherever
+            # macOS displays it.
+            if key.isupper():
+                item.setKeyEquivalentModifierMask_(
+                    NSEventModifierFlagCommand | NSEventModifierFlagShift)
+        edit_item.setSubmenu_(edit)
+
+        NSApp.setMainMenu_(main)
 
     def _buildStatusItem(self):
         bar = NSStatusBar.systemStatusBar()
