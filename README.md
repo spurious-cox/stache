@@ -22,6 +22,16 @@ The name is the joke: a *stache* is where you *stash* things.
 
 ## New in 2
 
+* **Share a clipping to anywhere macOS can send it** (2.11.2). A Share
+  submenu on the clipping's menu, carrying whatever the system offers for
+  that content — AirDrop, Mail, Messages, Notes, Freeform, Journal,
+  Reminders, and Add to Reading List when the clipping is a link. AirDrop
+  gets a named file rather than raw text, so it arrives with its name
+  intact. A hidden clipping asks for Touch ID first: sealing one out of
+  every list would mean little if sending it off the Mac did not ask.
+* **The Help button says "Help"** instead of "?", and the help text has a
+  section on sending a clipping somewhere.
+
 * **⌘V, ⌘C, ⌘X and ⌘A now work in every text field** (2.5.1). A background app
   owns no menu bar, and without a main menu there was nothing for macOS to
   match those keystrokes against — so a note could be typed into but not
