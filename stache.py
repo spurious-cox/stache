@@ -405,7 +405,7 @@ History:
   1.0.0  First release.
 """
 
-APP_VERSION = "2.5.3"
+APP_VERSION = "2.11.2"
 COPYRIGHT = "© 2026 Tim McCoy"
 APP_NAME = "Stache"
 BUNDLE_ID = "com.timmccoy.stache"
@@ -422,9 +422,15 @@ import sys
 import time
 from datetime import datetime
 
+import shutil
+import tempfile
+import re
 import objc
 from AppKit import (
     NSAlert,
+    NSSharingService,
+    NSSharingServiceNameSendViaAirDrop,
+    NSSharingServiceNameComposeMessage,
     NSOpenPanel,
     NSTextView,
     NSWorkspaceOpenConfiguration,
@@ -509,6 +515,7 @@ from Foundation import (
     NSRunLoopCommonModes,
     NSTimer,
     NSURL,
+    NSString,
     NSUserDefaults,
     NSZeroRect,
 )
@@ -2244,6 +2251,10 @@ class GridView(NSView):
         if index not in self._selection:
             self._selectOnly_(index)
         self.setNeedsDisplay_(True)
+        # Share… shows a popover, which needs a rect to point at. By the time
+        # the menu item fires the mouse has moved, so the card is recorded now.
+        self.delegate._menu_rect = self.cardRect_(index)
+        self.delegate._menu_view = self
         menu = self.delegate.menuForItem_(self._items[index])
         NSMenu.popUpContextMenu_withEvent_forView_(menu, event, self)
 
@@ -2578,6 +2589,7 @@ def filter_list():
     """
     return list(FILTER_KINDS) + [(name, ("search", query))
                                  for name, query in saved_filters()]
+HELP_W = 48        # wide enough for the word "Help"
 SEARCH_W = 220                            # the search field, pinned right
 FILTER_X = 300                            # where the filters start, when there
                                           # is room for them there
@@ -2611,6 +2623,47 @@ class HintView(NSView):
             NSForegroundColorAttributeName: NSColor.secondaryLabelColor(),
             NSParagraphStyleAttributeName: _para(wrap=False),
         }).drawInRect_(NSMakeRect(12, 3, self.bounds().size.width - 24, 14))
+
+
+class ShareServiceDelegate(NSObject):
+    """Anchors a sharing service's sheet and says what became of it.
+
+    NSSharingService needs a source window. Without one the sheet closes the
+    instant it opens and the only visible effect is the app losing focus,
+    which reads as nothing happening at all.
+    """
+
+    def initWithController_label_(self, controller, label):
+        self = objc.super(ShareServiceDelegate, self).init()
+        if self is None:
+            return None
+        self._controller = controller
+        self._label = label
+        return self
+
+    def sharingService_sourceWindowForShareItems_sharingContentScope_(
+            self, service, items, scope):
+        return self._controller.panel
+
+    # AirDrop is the only service here whose success callback means the
+    # clipping actually arrived somewhere. For Mail and the rest it fires when
+    # the app ACCEPTS the content and opens its window -- saying "sent" then is
+    # a claim about something that has not happened and may never happen. Those
+    # keep the "Opened in ..." line already on screen.
+    REAL_TRANSFER = ("AirDrop",)
+
+    def sharingService_didShareItems_(self, service, items):
+        if self._label in self.REAL_TRANSFER:
+            self._controller._announceStatus_("\u2713  Sent by %s" % self._label)
+
+    def sharingService_didFailToShareItems_error_(self, service, items, error):
+        # Cancelling arrives here too, as NSUserCancelledError. That is a
+        # choice, not a failure, and saying "failed" for it would be wrong.
+        if error is not None and error.code() == 3072:
+            self._controller._announceStatus_("%s cancelled" % self._label)
+        else:
+            self._controller._announceStatus_(
+                "%s could not send that" % self._label)
 
 
 class PickerController(NSObject):
@@ -2754,9 +2807,11 @@ class PickerController(NSObject):
 
         self.installShortcuts()
 
+        # "Help" rather than "?": the button is wider to fit the word, and its
+        # x moves left by the same amount so the gap to the search field stays.
         self.help_button = NSButton.alloc().initWithFrame_(
-            NSMakeRect(size.width - 12 - SEARCH_W - 34, 9, 26, 24))
-        self.help_button.setTitle_("?")
+            NSMakeRect(size.width - 12 - SEARCH_W - HELP_W - 8, 9, HELP_W, 24))
+        self.help_button.setTitle_("Help")
         self.help_button.setBezelStyle_(1)
         self.help_button.setTarget_(self)
         self.help_button.setAction_("showHelp:")
@@ -2857,6 +2912,14 @@ class PickerController(NSObject):
         self.panel.makeKeyAndOrderFront_(None)
         self.panel.makeFirstResponder_(self.grid)
         self._was_key = False
+        # Anything that happened while the strip was closed — a share result,
+        # usually — gets its moment now. Stale news is worse than none, so it
+        # is dropped after a few minutes.
+        held = getattr(self, "_pending_status", None)
+        if held is not None:
+            self._pending_status = None
+            if time.time() - held[1] < 300:
+                self._announceStatus_(held[0])
 
     def reopenAfterRebuild_kind_(self, query, kind):
         """Back on screen with the search and filter that were in force.
@@ -3187,7 +3250,8 @@ class PickerController(NSObject):
             menu_w = min(max(78.0, self.filter.frame().size.width),
                          max(78.0, width - 130))
             self.filter.setFrame_(NSMakeRect(12, 8, menu_w, 25))
-            self.help_button.setFrame_(NSMakeRect(width - 12 - 26, 9, 26, 24))
+            self.help_button.setFrame_(
+                NSMakeRect(width - 12 - HELP_W, 9, HELP_W, 24))
             left = 12 + menu_w + 8
             self.status.setFrame_(
                 NSMakeRect(left, 12, max(30, width - left - 46), 18))
@@ -3195,11 +3259,11 @@ class PickerController(NSObject):
         self.filter.sizeToFit()
         filters_w = self.filter.frame().size.width
         search_x = width - 12 - SEARCH_W
-        help_x = search_x - 34
+        help_x = search_x - HELP_W - 8
         filters_x = min(FILTER_X, help_x - 12 - filters_w)
         filters_x = max(12 + 90, filters_x)     # never crowd the status out
         self.search.setFrame_(NSMakeRect(search_x, 8, SEARCH_W, 26))
-        self.help_button.setFrame_(NSMakeRect(help_x, 9, 26, 24))
+        self.help_button.setFrame_(NSMakeRect(help_x, 9, HELP_W, 24))
         self.filter.setFrame_(NSMakeRect(filters_x, 9, filters_w, 24))
         self.status.setFrame_(
             NSMakeRect(12, 12, max(60, filters_x - 24), 18))
@@ -3329,6 +3393,27 @@ class PickerController(NSObject):
         """
         self.app.copyToPasteboard_(item)
         self._announceCopied_(item)
+
+    STATUS_SECONDS = 8.0
+
+    def _announceStatus_(self, text):
+        """Say something on the strip's status line, the way a copy does.
+
+        A share result usually arrives while the strip is CLOSED: choosing Mail
+        opens its compose window, the click into it dismisses the strip, and
+        the four-second flash then expires unseen. So an outcome that lands on
+        a hidden panel is held and shown the next time the strip opens.
+        """
+        if not self.panel.isVisible():
+            self._pending_status = (text, time.time())
+            return
+        self.status.setTextColor_(NSColor.controlAccentColor())
+        self.status.setStringValue_(text)
+        if self._flash is not None:
+            self._flash.invalidate()
+        self._flash = NSTimer.\
+            scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                self.STATUS_SECONDS, self, "clearFlash:", None, False)
 
     def _announceCopied_(self, item):
         what = ("that image" if item.kind == "image"
@@ -3688,6 +3773,42 @@ class PickerController(NSObject):
         with_item.setEnabled_(link is not None or path is not None)
 
         add("Reveal in Finder", "menuReveal:", path is not None)
+        # The services are asked for by name, so each one can later be given
+        # the form it accepts. AirDrop never appears for a string, so it is
+        # looked up separately and added.
+        share_item = menu.addItemWithTitle_action_keyEquivalent_("Share", None, "")
+        share_menu = NSMenu.alloc().initWithTitle_("Share")
+        self._share_services = {}
+        probe = self._shareItems_forSend_(item, False) or []
+        services = list(NSSharingService.sharingServicesForItems_(probe)) if probe else []
+        # Two services are asked for by name rather than taken from the
+        # enumeration. AirDrop never appears for a string, and macOS leaves
+        # Messages out of the list for this app although the service works
+        # perfectly when asked for directly.
+        named = []
+        if item.kind != "image" and not item.url():
+            named.append(NSSharingService.sharingServiceNamed_(
+                NSSharingServiceNameSendViaAirDrop))
+        have = {svc.title() for svc in services}
+        if "Messages" not in have:
+            named.append(NSSharingService.sharingServiceNamed_(
+                NSSharingServiceNameComposeMessage))
+        for svc in reversed([x for x in named if x is not None]):
+            if svc.canPerformWithItems_(probe):
+                services.insert(0, svc)
+            elif svc.title() == "AirDrop":
+                services.insert(0, svc)   # it takes the file form instead
+        order = {"AirDrop": 0, "Mail": 1, "Messages": 2}
+        services.sort(key=lambda svc: (order.get(svc.title(), 3),))
+        for index, svc in enumerate(services):
+            entry = share_menu.addItemWithTitle_action_keyEquivalent_(
+                svc.title(), "menuShare:", "")
+            entry.setTarget_(self)
+            entry.setTag_(index)
+            entry.setImage_(svc.image())
+            self._share_services[index] = svc
+        menu.setSubmenu_forItem_(share_menu, share_item)
+        share_item.setEnabled_(bool(services))
         # Editing in place is offered only for PINNED clippings: an unpinned
         # one is subject to the item cap and the age cap, so the edit would
         # be work the retention sweep deletes later.
@@ -3751,6 +3872,111 @@ class PickerController(NSObject):
                 open_url_with(link, panel.URLs()[0])
             else:
                 open_with(path, panel.URLs()[0])
+
+    def _namedCopy_path_(self, item, path):
+        """A copy of `path` named after the clipping, for sending.
+
+        The stored file is named by digest -- 3b9c8109b8ab4b9894c68f0e.png --
+        and that is what the person receiving it would see. Copying costs a
+        few hundred KB of temporary space and is only done when something is
+        actually being sent, never while building the menu.
+        """
+        if item.kind == "image":
+            # _menu_title says "Image  1000 × 506", and the multiplication sign
+            # sanitizes to an underscore. The source app and the dimensions
+            # make a name worth reading: "Pixelmator Pro 908x360.png".
+            name = "%s %dx%d" % (item.app or "Stache", item.width, item.height)
+        else:
+            name = _menu_title(item)
+        name = re.sub(r"[^\w .-]", "_", name)[:40].strip()
+        if not name:
+            return path
+        folder = tempfile.mkdtemp(prefix="stache-share-")
+        target = os.path.join(folder, name + os.path.splitext(path)[1])
+        try:
+            shutil.copy2(path, target)
+        except OSError:
+            return path
+        return target
+
+    def _shareItems_forSend_(self, item, for_send):
+        """The clipping as the services want it, or None with a reason already
+        on the status line.
+
+        Text goes as a STRING. Every service except AirDrop takes one, and a
+        string is what puts the words in the message rather than attaching a
+        file containing them. A URL goes as the URL, so the far end gets a link
+        it can open. An image is already a file.
+        """
+        link = item.url()
+        if link:
+            return [NSURL.URLWithString_(link)]
+        if item.kind == "image":
+            path = openable_path(item)
+            if path:
+                if for_send:
+                    path = self._namedCopy_path_(item, path)
+                return [NSURL.fileURLWithPath_(path)]
+        body = item.body or ""
+        if not body.strip():
+            self._announceStatus_("Nothing to share — this clipping is empty.")
+            return None
+        return [NSString.stringWithString_(body)]
+
+    def _shareFile_(self, item):
+        """The same clipping as a FILE, for AirDrop, which refuses a string.
+        Written only when AirDrop is actually chosen."""
+        link = item.url()
+        if link:
+            return [NSURL.URLWithString_(link)]
+        path = openable_path(item) if item.kind == "image" else None
+        if path is not None:
+            return [NSURL.fileURLWithPath_(self._namedCopy_path_(item, path))]
+        if path is None:
+            body = item.body or ""
+            if not body.strip():
+                self._announceStatus_("Nothing to share — this clipping is empty.")
+                return None
+            name = re.sub(r"[^\w .-]", "_", _menu_title(item))[:40].strip()
+            folder = tempfile.mkdtemp(prefix="stache-share-")
+            path = os.path.join(folder, (name or "clipping") + ".txt")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(body)
+        return [NSURL.fileURLWithPath_(path)]
+
+    def menuShare_(self, sender):
+        """Perform the chosen service, with the form that service accepts.
+
+        Built by hand rather than with NSSharingServicePicker: the picker takes
+        ONE item set for every service, and there is no single form that suits
+        them all. A file gives AirDrop what it needs but reaches Mail and
+        Messages as an attachment instead of words in the message.
+        """
+        item = self._menu_item
+        service = self._share_services.get(int(sender.tag()))
+        if item is None or service is None:
+            return
+        if getattr(item, "hidden", 0) and not self.app.store.vault.unlock(
+                reason="share a hidden clipping"):
+            return
+        items = (self._shareFile_(item) if service.title() == "AirDrop"
+                 else self._shareItems_forSend_(item, True))
+        if items is None:
+            return
+        if not service.canPerformWithItems_(items):
+            self._announceStatus_("%s will not take that clipping."
+                                  % service.title())
+            return
+        self._share_delegate = ShareServiceDelegate.alloc().\
+            initWithController_label_(self, service.title())
+        service.setDelegate_(self._share_delegate)
+        NSApp.activateIgnoringOtherApps_(True)
+        service.performWithItems_(items)
+        # Say what is actually known NOW. Mail takes the clipping, opens its
+        # compose window and never calls back at all -- promising an outcome
+        # that only some services report meant most shares said nothing. The
+        # delegate replaces this line for the ones that do report.
+        self._announceStatus_("Opened in %s" % service.title())
 
     def menuReveal_(self, sender):
         if self._menu_path:
@@ -4117,10 +4343,43 @@ HELP_SECTIONS = (
         ("⌫", "delete the selected clipping for good — refused while it is "
                 "pinned, so unpin it first"),
         ("right-click", "Quick Look · Copy · Open · Open With ▸ · Reveal in Finder · "
-                        "Pin · Delete"),
+                        "Share ▸ · Pin · Delete"),
         ("⌘0", "put the picker back where it calculated it belonged, "
                 "forgetting where it was dragged"),
         ("esc", "close, clipboard untouched"),
+    )),
+    ("Sending a clipping somewhere", (
+        ("Share ▸", "a submenu of everything macOS can send this clipping "
+                    "to: AirDrop, Mail, Messages, Notes, Freeform, Journal, "
+                    "Reminders, and Add to Reading List when it is a link. "
+                    "What appears depends on what the clipping is"),
+        ("AirDrop", "the fastest way to a device in the room — another Mac, an "
+                    "iPhone, an iPad — and it needs no address, no account and "
+                    "no network beyond the two devices seeing each other. It "
+                    "does need the other device awake, unlocked and "
+                    "discoverable. If nobody appears in the sheet, that is why"),
+        ("the others", "Mail and Messages reach a person rather than a device, "
+                       "work at any distance, and leave a record you can find "
+                       "later. Notes, Freeform, Journal and Reminders keep the "
+                       "clipping on this Mac but put it somewhere it belongs. "
+                       "All of them are slower than AirDrop and most want an "
+                       "account set up"),
+        ("what is actually sent", "each service is given the form it accepts. "
+                                  "A URL goes as the link, so the far end can "
+                                  "open it. An image goes as its picture. Text "
+                                  "goes as TEXT to Mail, Messages and the "
+                                  "rest, so the words are in the message — but "
+                                  "as a .txt file to AirDrop, which is the one "
+                                  "service that refuses a plain string"),
+        ("hidden clippings", "Touch ID is asked for again before sending. The "
+                             "menu is reachable while the vault is open, and "
+                             "sending one off this Mac is exactly what the "
+                             "lock is for"),
+        ("did it work", "the status line says the clipping was handed over, "
+                        "naming the service. Some services report back when "
+                        "the transfer itself finishes and the line then says "
+                        "sent or cancelled; Mail and others never report at "
+                        "all, so handing over is the most that can be said"),
     )),
     ("Finding one", (
         ("just type", "it goes to the search field"),

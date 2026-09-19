@@ -19,3 +19,6 @@ icon/Stache_glyph.png
 
 # signed/notarised output
 *.dmg
+
+# working backups taken before a substantial edit
+*.bak
