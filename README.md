@@ -266,3 +266,7 @@ The version lives in one place — `APP_VERSION` in `stache.py`.
     stache.entitlements hardened-runtime entitlements
 
 © 2026 Tim McCoy.
+
+## Problems or suggestions
+
+Open an issue: https://github.com/spurious-cox/stache/issues
