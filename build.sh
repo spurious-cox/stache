@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Build, sign and install Stache.app — v1.0.0
+# Build, sign and install Stache.app — v1.1.0
 #
 # Signing follows the same rules the other apps here learned the hard way:
 #
@@ -59,6 +59,11 @@ echo "==> building the icon"
 echo "==> building"
 rm -rf build dist
 ./venv/bin/python setup.py py2app >/dev/null
+
+# macOS 26+ draws an app that has only an .icns shrunk onto a plain plate.
+# The Icon Composer document compiles into Assets.car, which macOS 26+ uses
+# instead; the .icns from setup.py is still what macOS 13-25 show.
+~/bin/glass_icon dist/Stache.app icon/AppIcon.icon
 
 echo "==> signing inner binaries with the hardened runtime"
 find dist/Stache.app -type f -print0 2>/dev/null | while IFS= read -r -d $'\0' f; do

@@ -33,6 +33,8 @@ typing Cmd-V for you - synthesising a keystroke is the one thing here that
 would have demanded Accessibility.
 
 History:
+  2.11.3 The icon is also an Icon Composer icon, so macOS 26 and later draw it
+         full size with the system's own shape, not shrunk onto a plate.
   1.17.2 Says to quit before updating. The LaunchAgent already distinguishes
          a clean quit (not relaunched) from a crash (relaunched) — but
          nothing told anyone, and replacing a LIVE bundle is unreliable: on
@@ -405,7 +407,7 @@ History:
   1.0.0  First release.
 """
 
-APP_VERSION = "2.11.2"
+APP_VERSION = "2.11.3"
 COPYRIGHT = "© 2026 Tim McCoy"
 APP_NAME = "Stache"
 BUNDLE_ID = "com.timmccoy.stache"
