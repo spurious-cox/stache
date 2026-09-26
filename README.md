@@ -63,7 +63,8 @@ The name is the joke: a *stache* is where you *stash* things.
 No Dock icon and no window of its own — Stache lives in the menu bar. That
 menu holds **no clippings**: it opens with one click and no authentication,
 which is the wrong place for the history when hidden clippings exist. It is
-About, Preferences, Help, Open, Pause Capturing, Clear History and Quit.
+About, Preferences, Help, Check for Updates, Open, Pause Capturing, Clear
+History and Quit.
 
 Three layouts, set in Preferences, each remembering its own size and place:
 

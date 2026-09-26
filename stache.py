@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Stache - clipboard history for macOS
-Version: 2.11.4
+Version: 2.12.0
 
 A background (LSUIElement) agent that watches the general pasteboard and
 records everything copied to it - plain text and images alike - with the date
@@ -33,6 +33,9 @@ typing Cmd-V for you - synthesising a keystroke is the one thing here that
 would have demanded Accessibility.
 
 History:
+  2.12.0 Check for Updates… in the menu bar menu asks GitHub for the newest
+         release and offers its download page when it is newer than the
+         running copy.
   2.11.4 Closing the picker no longer drags you to another Space.  Focus
          goes back to the app that had it only when that app has a window
          on the Space you are on; otherwise to the frontmost app on this
@@ -412,7 +415,7 @@ History:
   1.0.0  First release.
 """
 
-APP_VERSION = "2.11.4"
+APP_VERSION = "2.12.0"
 COPYRIGHT = "© 2026 Tim McCoy"
 APP_NAME = "Stache"
 BUNDLE_ID = "com.timmccoy.stache"
@@ -426,6 +429,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime
 
@@ -4380,8 +4384,8 @@ HELP_INTRO = (
 HELP_SECTIONS = (
     ("Getting it open", (
         ("%s", "open the picker from anywhere"),
-        ("menu bar S", "About, Preferences, Help, Open, Pause Capturing, "
-                        "Clear History and Quit. Deliberately no clippings: a "
+        ("menu bar S", "About, Preferences, Help, Check for Updates, "
+                        "Open, Pause Capturing, Clear History and Quit. Deliberately no clippings: a "
                         "menu opens with one click and no authentication"),
     )),
     ("Choosing a clipping", (
@@ -5095,6 +5099,71 @@ def _alert(title, body):
 
 
 # ---------------------------------------------------------------------------
+# Updates
+# ---------------------------------------------------------------------------
+
+RELEASES_API = "https://api.github.com/repos/spurious-cox/stache/releases/latest"
+RELEASES_PAGE = "https://github.com/spurious-cox/stache/releases/latest"
+CASK = "spurious-cox/tap/stache"
+
+
+def latest_release():
+    """(version, page url) of the newest published release, or None when
+    GitHub cannot be reached or answers with something unexpected.
+
+    curl rather than urllib: it uses the system's certificate store, which
+    a bundled Python does not have.
+    """
+    try:
+        out = subprocess.run(
+            ["/usr/bin/curl", "-sfL", "--max-time", "10",
+             "-H", "Accept: application/vnd.github+json", RELEASES_API],
+            capture_output=True, timeout=15, check=True).stdout
+        data = json.loads(out)
+        return [str(data["tag_name"]).lstrip("v"),
+                str(data.get("html_url") or RELEASES_PAGE)]
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError,
+            TypeError):
+        return None
+
+
+def version_tuple(text):
+    return tuple(int(part) for part in re.findall(r"\d+", str(text)))
+
+
+def update_alert(found):
+    """Say what the check found. Returns the page to open, or None."""
+    alert = NSAlert.alloc().init()
+    icon = own_icon()
+    if icon is not None:
+        alert.setIcon_(icon)
+    if not found:
+        alert.setMessageText_("Couldn’t check for updates")
+        alert.setInformativeText_(
+            "GitHub could not be reached. Check the network connection and "
+            "try again.")
+        alert.addButtonWithTitle_("OK")
+        alert.runModal()
+        return None
+    latest, page = found[0], found[1]
+    if version_tuple(latest) <= version_tuple(APP_VERSION):
+        alert.setMessageText_("Stache is up to date")
+        alert.setInformativeText_("You have %s, the newest version."
+                                  % APP_VERSION)
+        alert.addButtonWithTitle_("OK")
+        alert.runModal()
+        return None
+    alert.setMessageText_("Stache %s is available" % latest)
+    alert.setInformativeText_(
+        "You have %s. Quit Stache before installing the new version.\n\n"
+        "Installed with Homebrew? Run:\nbrew upgrade --cask %s"
+        % (APP_VERSION, CASK))
+    alert.addButtonWithTitle_("Open Download Page")
+    alert.addButtonWithTitle_("Later")
+    return page if alert.runModal() == 1000 else None
+
+
+# ---------------------------------------------------------------------------
 # Login item
 # ---------------------------------------------------------------------------
 
@@ -5304,6 +5373,9 @@ class StacheApp(NSObject):
         help_item = menu.addItemWithTitle_action_keyEquivalent_(
             "Help…", "menuHelp:", "/")
         help_item.setTarget_(self)
+        updates = menu.addItemWithTitle_action_keyEquivalent_(
+            "Check for Updates…", "menuCheckUpdates:", "")
+        updates.setTarget_(self)
         menu.addItem_(NSMenuItem.separatorItem())
         self.open_item = menu.addItemWithTitle_action_keyEquivalent_(
             "Open Stache", "menuOpen:", "")
@@ -5518,6 +5590,26 @@ class StacheApp(NSObject):
             "© 2026 Tim McCoy."
             % (self.store.count(), "" if self.store.count() == 1 else "s",
                _human_bytes(self.store.disk_bytes()), SUPPORT_DIR))
+
+    def menuCheckUpdates_(self, sender):
+        # The request can take seconds on a slow network; the menu bar and
+        # the picker stay live meanwhile.
+        threading.Thread(target=self._fetchLatest, daemon=True).start()
+
+    def _fetchLatest(self):
+        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "showLatest:", latest_release(), False)
+
+    def showLatest_(self, found):
+        if self.picker is not None:
+            self.picker.holdOpen()
+        NSApp.activateIgnoringOtherApps_(True)
+        page = update_alert(found)
+        if page:
+            NSWorkspace.sharedWorkspace().openURL_(
+                NSURL.URLWithString_(page))
+        if self.picker is not None:
+            self.picker.releaseHold()
 
     def menuQuit_(self, sender):
         NSApp.terminate_(None)
