@@ -98,6 +98,10 @@ Clicking away closes it; the pointer merely crossing another window does not.
 That distinction matters if you use Terminal's *FocusFollowsMouse*, which
 makes a window key on hover — the picker stays put until you actually click.
 
+Closing the picker leaves you on the Space you are on. The keyboard goes back
+to the app that had it if that app has a window here, otherwise to the
+frontmost app on this Space.
+
 Drag the panel anywhere and resize it; the frame is saved per layout. One
 dimension is fixed by the card — a strip's height, a column's width. ⌘0
 forgets a dragged position, which matters if it was dragged to a display you

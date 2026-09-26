@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Stache - clipboard history for macOS
-Version: 1.0.0
+Version: 2.11.4
 
 A background (LSUIElement) agent that watches the general pasteboard and
 records everything copied to it - plain text and images alike - with the date
@@ -33,6 +33,11 @@ typing Cmd-V for you - synthesising a keystroke is the one thing here that
 would have demanded Accessibility.
 
 History:
+  2.11.4 Closing the picker no longer drags you to another Space.  Focus
+         goes back to the app that had it only when that app has a window
+         on the Space you are on; otherwise to the frontmost app on this
+         Space.  The close button now does everything Esc does: it saves
+         the panel's place and relocks hidden clippings.
   2.11.3 The icon is also an Icon Composer icon, so macOS 26 and later draw it
          full size with the system's own shape, not shrunk onto a plate.
   1.17.2 Says to quit before updating. The LaunchAgent already distinguishes
@@ -407,7 +412,7 @@ History:
   1.0.0  First release.
 """
 
-APP_VERSION = "2.11.3"
+APP_VERSION = "2.11.4"
 COPYRIGHT = "© 2026 Tim McCoy"
 APP_NAME = "Stache"
 BUNDLE_ID = "com.timmccoy.stache"
@@ -501,9 +506,16 @@ from AppKit import (
     NSWindowStyleMaskResizable,
     NSWindowStyleMaskTitled,
     NSWindowStyleMaskUtilityWindow,
+    NSRunningApplication,
     NSWorkspace,
 )
-from Quartz import QLPreviewPanel
+from Quartz import (
+    CGWindowListCopyWindowInfo,
+    QLPreviewPanel,
+    kCGNullWindowID,
+    kCGWindowListExcludeDesktopElements,
+    kCGWindowListOptionOnScreenOnly,
+)
 from Foundation import (
     NSAttributedString,
     NSBundle,
@@ -2668,6 +2680,28 @@ class ShareServiceDelegate(NSObject):
                 "%s could not send that" % self._label)
 
 
+def _appsOnThisSpace():
+    """Process ids of the apps with a normal window on the current Space,
+    frontmost first, not counting Stache itself.
+
+    The on-screen window list covers only the current Space (plus windows
+    that are on every Space, which are not at the normal level), and it is
+    ordered front to back. Owner and level need no Screen Recording grant.
+    """
+    info = CGWindowListCopyWindowInfo(
+        kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
+        kCGNullWindowID) or []
+    mine = os.getpid()
+    pids = []
+    for window in info:
+        if window.get("kCGWindowLayer") != 0:
+            continue
+        pid = window.get("kCGWindowOwnerPID")
+        if pid and pid != mine and pid not in pids:
+            pids.append(pid)
+    return pids
+
+
 class PickerController(NSObject):
     """The window the hotkey raises: search field, filter, grid.
 
@@ -3110,13 +3144,27 @@ class PickerController(NSObject):
         Without this the picker's own (invisible, LSUIElement) application
         stays active after the panel closes, and the Cmd-V the user is about
         to press goes nowhere.
+
+        The picker is on every Space, but the app it was opened over may
+        not be. Activating an app with no window on the current Space makes
+        macOS switch to one of its Spaces, so that app gets focus back only
+        when it has a window here; otherwise the frontmost app on this Space
+        does.
         """
         app = self.previous_app
         self.previous_app = None
-        if app is not None and not app.isTerminated():
+        here = _appsOnThisSpace()
+        if app is not None and not app.isTerminated() \
+                and app.processIdentifier() in here:
             app.activateWithOptions_(0)
-        else:
-            NSApp.hide_(None)
+            return
+        for pid in here:
+            other = NSRunningApplication.\
+                runningApplicationWithProcessIdentifier_(pid)
+            if other is not None and not other.isTerminated():
+                other.activateWithOptions_(0)
+                return
+        NSApp.hide_(None)
 
     def windowDidBecomeKey_(self, note):
         self._was_key = True
@@ -3187,7 +3235,8 @@ class PickerController(NSObject):
         self.releaseHold()
 
     def windowWillClose_(self, note):
-        self._restoreFocus()
+        # The close button: everything Esc does, including the relock.
+        self.hide()
 
     def cancelOperation_(self, sender):        # Esc
         self.hide()
