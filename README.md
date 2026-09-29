@@ -233,23 +233,6 @@ None. The hotkey is a Carbon hot key, and writing to the pasteboard is
 unprivileged. That is why picking a clipping copies rather than pressing ⌘V
 for you — synthesising a keystroke would have required Accessibility.
 
-## From the shell
-
-`~/bin/stache` reads the same history:
-
-    stache                 the 20 newest clippings, numbered
-    stache list -n 50      more of them
-    stache list safari     only clippings matching "safari"
-    stache 3               print clipping 3
-    stache copy 3          put clipping 3 on the clipboard
-    stache path 3          the PNG behind an image clipping
-    stache rm 3            delete clipping 3 (asks; --force skips)
-    stache stats           how much history there is
-
-Numbers match the app. The database is opened read-only except for `rm`, so
-it is safe to run while the app is running. It cannot see hidden clippings —
-the key belongs to the app.
-
 ## Building
 
     ./venv/bin/python test_stache.py      headless checks + test_render*.png
