@@ -22,6 +22,9 @@ The name is the joke: a *stache* is where you *stash* things.
 
 ## New in 2
 
+* **Reading order** (2.13). Tick Show oldest first and the latest clipping is
+  on the right instead of the left, and recalled clippings stop jumping to
+  the front.
 * **Share a clipping to anywhere macOS can send it** (2.11.2). A Share
   submenu on the clipping's menu, carrying whatever the system offers for
   that content — AirDrop, Mail, Messages, Notes, Freeform, Journal,
@@ -125,8 +128,13 @@ A changed card shows **edited** beside its date.
 
 ## Pinning
 
+**Pin and Unpin work on the whole selection.** Select several cards (⇧click,
+⌘click), right-click one of them and choose **Pin 23 Clippings**; the card you
+click decides the direction, so on a pinned card the same menu unpins all of
+them.
+
 A pinned clipping is exempt from the item limit, the age
-limit and Clear History. **It cannot be deleted while pinned** — unpin it
+limit. **It cannot be deleted while pinned** — unpin it
 first. Deleting a mixed selection deletes the unpinned ones and says how many
 it kept.
 
@@ -192,11 +200,27 @@ From the menu bar item, or ⌘, while Stache is frontmost.
 * **Delete after** *n* days (0 = never), counted from the last time you used
   a clipping. A card in the last tenth of its life says so in red.
 * **Capture images as well as text.**
+* **Show oldest first (reading order)** — which end the newest clipping is on.
+  **Unchecked** (the default): the latest is on the **left**, and older
+  clippings follow to the right. **Checked**: the latest is on the **right**,
+  with the oldest on the left, and in a grid the rows fill left to right and
+  then downwards, so the newest is at the bottom right. Checked, the order is
+  the capture time alone, so a clipping you recall, edit, pin or hide stays
+  where it was collected; the picker opens on the newest one, scrolled into
+  view. `stache` in the shell follows it.
 * **Open Stache at login** — installs a LaunchAgent, which launchd restarts
   if it dies.
-* **Clear History…** — deletes every unpinned clipping and its image file.
 
-Defaults: large cards, strip at 60%, ⌃⌥⌘Space, 500 items, 30 days, images on.
+There is deliberately no Clear History: one click from deleting everything
+that is not pinned was too close. **To delete clippings, select them in the
+picker and press ⌫** (⇧click selects a range, ⌘click adds or removes one),
+or right-click and choose **Delete**. A pinned clipping must be unpinned
+first, and deleting a mixed selection deletes the unpinned ones and says how
+many it kept. To trim the history in bulk, lower **Keep at most** or **Delete
+after**.
+
+Defaults: large cards, strip at 60%, ⌃⌥⌘Space, 500 items, 30 days, images on,
+newest first.
 
 ## Where the data lives
 

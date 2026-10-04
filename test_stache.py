@@ -251,13 +251,20 @@ def test_prefs_layout():
                 ("strip width", prefs.strip_pct), ("hotkey", prefs.hotkey_button),
                 ("max items", prefs.max_items), ("max days", prefs.max_days),
                 ("capture images", prefs.capture_images),
-                        ("login item", prefs.login_item)]
+                ("oldest first", prefs.oldest_first),
+                ("login item", prefs.login_item)]
     tops = sorted((c.frame().origin.y, name) for name, c in controls)
     # One row fewer since 1.11.0: the confirm-pinned switch went when a
     # pinned clipping stopped being deletable at all.
     check("every row is at its own height",
           len({round(y) for y, _ in tops}) == len(controls),
           str([(n, round(y)) for y, n in tops]))
+    clear = prefs.delete_note.frame()
+    lowest = min(c.frame().origin.y for _n, c in controls)
+    check("the last row clears the note on deleting",
+          lowest >= clear.origin.y + clear.size.height,
+          "lowest row at %.0f, button top at %.0f"
+          % (lowest, clear.origin.y + clear.size.height))
     return prefs
 
 
@@ -369,6 +376,57 @@ def test_expiry():
     store.close()
 
 
+def test_prefs_save_cancel():
+    """Nothing applies until Save; Cancel and close discard."""
+    print("preferences save and cancel")
+    from AppKit import NSApplication
+    NSApplication.sharedApplication()
+
+    class Picker(object):
+        reloads = 0
+
+        def reload(self):
+            Picker.reloads += 1
+
+        def releaseHold(self):
+            pass
+
+        class grid(object):
+            @staticmethod
+            def selectNewest():
+                pass
+
+    class Fake(object):
+        store = None
+        picker = Picker()
+
+    prefs = stache.PrefsController.alloc().initWithApp_(Fake())
+    prefs.show()
+    try:
+        prefs.oldest_first.setState_(1)
+        prefs.stage_(prefs.oldest_first)
+        check("ticking a box applies nothing",
+              not stache.pref(stache.DEF_OLDEST_FIRST))
+        prefs.cancel_(None)
+        check("Cancel leaves the setting alone",
+              not stache.pref(stache.DEF_OLDEST_FIRST))
+        check("and puts the control back", prefs.oldest_first.state() == 0)
+        prefs.show()
+        prefs.oldest_first.setState_(1)
+        prefs.windowWillClose_(None)
+        check("closing the window discards too",
+              prefs.oldest_first.state() == 0
+              and not stache.pref(stache.DEF_OLDEST_FIRST))
+        prefs.show()
+        prefs.oldest_first.setState_(1)
+        prefs.save_(None)
+        check("Save applies it", bool(stache.pref(stache.DEF_OLDEST_FIRST)))
+        check("and reloads the picker", Picker.reloads == 1,
+              str(Picker.reloads))
+    finally:
+        stache.defaults().removeObjectForKey_(stache.DEF_OLDEST_FIRST)
+
+
 def test_dock():
     """Every Dock arrangement, without a Dock to point it at."""
     print("dock clearance")
@@ -471,7 +529,7 @@ def test_saved_filters():
     check("an unknown kind falls back to everything",
           len(store.items(kind="nonsense")) == 3, "expected all three")
 
-    stache.set_saved_filters([("Recipes", "hello")])
+    stache.set_saved_filters([("Recipes", ("search", "hello"))])
     names = [n for n, _q in stache.saved_filters()]
     check("a saved filter survives the round trip through preferences",
           names == ["Recipes"], str(names))
@@ -499,6 +557,23 @@ def test_saved_filters():
     check("removing it leaves the built-ins alone",
           [l for l, _k in stache.filter_list()] == built_in,
           str([l for l, _k in stache.filter_list()]))
+
+    # A filter made from a search holds what the search found, not the words.
+    found = tuple(i.id for i in store.items(query="hello"))
+    stache.set_saved_filters([("Snap", ("ids", found))])
+    check("a snapshot filter round-trips through preferences",
+          stache.saved_filters() == [("Snap", ("ids", found))],
+          str(stache.saved_filters()))
+    kind = stache.saved_filters()[0][1]
+    store.add_text("hello later", "Safari")
+    got = [i.id for i in store.items(kind=kind)]
+    check("a clipping that matches the words later is NOT added",
+          sorted(got) == sorted(found), str(got))
+    check("and its count agrees", store.counts("", [kind])[kind] == len(found),
+          str(store.counts("", [kind])))
+    check("a typed search still narrows it",
+          len(store.items(query="again", kind=kind)) == 1, "expected one")
+    stache.set_saved_filters([])
 
 
 def test_notes():
@@ -718,6 +793,135 @@ def test_order():
     store.reveal([ids[2]])
     check("revealing one puts it at the front of All",
           store.items()[0].id == ids[2], str(store.items()[0].id))
+
+
+def test_reading_order():
+    """Oldest first sorts on capture time alone, and opens on the newest."""
+    print("reading order")
+    vault = stache.Vault(os.path.join(SCRATCH, "reading.key"))
+    store = stache.Store(os.path.join(SCRATCH, "reading.sqlite3"), vault=vault)
+    ids = []
+    for n in range(4):
+        ids.append(store.add_text("clipping %d" % n, "Notes"))
+        time.sleep(0.02)
+    stache.set_pref(stache.DEF_OLDEST_FIRST, True)
+    try:
+        got = [i.id for i in store.items()]
+        check("the list runs oldest to newest", got == ids, str(got))
+        store.set_pinned(ids[0], True)
+        store.touch(ids[1])
+        got = [i.id for i in store.items()]
+        check("pinning or recalling one does not move it", got == ids,
+              str(got))
+        store.hide([ids[2]])
+        got = [i.id for i in store.items()]
+        check("hidden ones are still absent, the rest keep their order",
+              got == [ids[0], ids[1], ids[3]], str(got))
+        store.reveal([ids[2]])
+        got = [i.id for i in store.items()]
+        check("and revealing one puts it back where it was collected",
+              got == ids, str(got))
+        got = [i.id for i in store.items(limit=2)]
+        check("a limit keeps the NEWEST clippings, still oldest first",
+              got == ids[-2:], str(got))
+
+        grid = stache.GridView.alloc().initWithFrame_(((0, 0), (800, 300)))
+        grid.setItems_(store.items())
+        check("a fresh grid selects the newest, the last card",
+              grid.selectedItem().id == ids[-1], str(grid.selectedItem().id))
+        grid.selectNewest()
+        check("selectNewest lands on the last card",
+              grid._selected == len(ids) - 1, str(grid._selected))
+    finally:
+        defaults = stache.defaults()
+        defaults.removeObjectForKey_(stache.DEF_OLDEST_FIRST)
+    got = [i.id for i in store.items()]
+    check("switched off, recall and pin order applies again",
+          got == [ids[2], ids[1], ids[0], ids[3]], str(got))
+    store.close()
+
+
+def test_add_to_filter():
+    """The Add to Filter menu grows and shrinks fixed filters."""
+    print("add to filter")
+    NSApplication.sharedApplication()
+    store = stache.Store(os.path.join(SCRATCH, "addfilter.sqlite3"))
+    ids = [store.add_text("item %d" % n, "Safari") for n in range(4)]
+
+    class App(FakeApp):
+        rebuilt = 0
+
+        def rebuildPicker(self):
+            App.rebuilt += 1
+
+    stache.set_saved_filters([("Fixed", ("ids", (ids[0],))),
+                              ("Old", ("search", "item 3"))])
+    picker = stache.PickerController.alloc().initWithApp_(App(store))
+    picker.reload()
+    items = {i.id: i for i in store.items()}
+
+    def entry(menu, title):
+        top = menu.itemWithTitle_("Add to Filter")
+        return top.submenu().itemWithTitle_(title)
+
+    menu = picker.menuForItem_(items[ids[1]])
+    check("the menu offers Add to Filter",
+          menu.itemWithTitle_("Add to Filter") is not None)
+    check("a clipping not in a filter is unticked",
+          entry(menu, "Fixed").state() == 0)
+    check("one already in it is ticked",
+          entry(picker.menuForItem_(items[ids[0]]), "Fixed").state() == 1)
+    check("a legacy search filter reports its matches too",
+          entry(picker.menuForItem_(items[ids[3]]), "Old").state() == 1)
+
+    picker.menuForItem_(items[ids[1]])
+    picker.menuAddToFilter_(entry(menu, "Fixed"))
+    got = dict(stache.saved_filters())["Fixed"]
+    check("choosing it adds the clipping",
+          got == ("ids", (ids[0], ids[1])), str(got))
+    check("and rebuilds the picker", App.rebuilt == 1, str(App.rebuilt))
+
+    picker.menuForItem_(items[ids[2]])
+    picker.menuAddToFilter_(entry(menu, "Old"))
+    got = dict(stache.saved_filters())["Old"]
+    check("a legacy filter becomes a fixed list on the first add",
+          got == ("ids", (ids[3], ids[2])), str(got))
+
+    picker.menuForItem_(items[ids[1]])
+    picker.menuAddToFilter_(entry(menu, "Fixed"))
+    got = dict(stache.saved_filters())["Fixed"]
+    check("choosing a ticked one takes the clipping out",
+          got == ("ids", (ids[0],)), str(got))
+
+    order = [i.id for i in picker.grid.items()]
+    pick = {order.index(ids[1]), order.index(ids[2])}
+    picker.grid._selection = pick
+    picker.grid._selected = order.index(ids[1])
+    grid_item = {i.id: i for i in picker.grid.items()}
+    pin_menu = picker.menuForItem_(grid_item[ids[1]])
+    check("the Pin item counts a multiple selection",
+          pin_menu.itemWithTitle_("Pin 2 Clippings") is not None)
+    picker.menuPin_(None)
+    pinned = [bool(store.get(i).pinned) for i in ids]
+    check("Pin pins every selected clipping, and only those",
+          pinned == [False, True, True, False], str(pinned))
+    picker.reload()
+    order = [i.id for i in picker.grid.items()]
+    picker.grid._selection = {order.index(ids[1]), order.index(ids[2])}
+    grid_item = {i.id: i for i in picker.grid.items()}
+    unpin_menu = picker.menuForItem_(grid_item[ids[1]])
+    check("on a pinned card the same menu offers Unpin for all",
+          unpin_menu.itemWithTitle_("Unpin 2 Clippings") is not None)
+    picker.menuPin_(None)
+    pinned = [bool(store.get(i).pinned) for i in ids]
+    check("and Unpin unpins them all", not any(pinned), str(pinned))
+
+    picker.menuForItem_(items[ids[0]])
+    hidden_menu = picker.menuForItem_(items[ids[0]])
+    check("no Remove item outside a fixed filter",
+          hidden_menu.itemWithTitle_("Remove from \u201cFixed\u201d") is None)
+    stache.set_saved_filters([])
+    store.close()
 
 
 def test_render():
@@ -1213,6 +1417,7 @@ if __name__ == "__main__":
         test_capture_vs_use()
         test_expiry()
         test_prefs_layout()
+        test_prefs_save_cancel()
         test_dock()
         test_search_dates()
         test_saved_filters()
@@ -1220,6 +1425,8 @@ if __name__ == "__main__":
         test_hidden()
         test_disk_cleanup()
         test_order()
+        test_reading_order()
+        test_add_to_filter()
         test_render()
     finally:
         shutil.rmtree(SCRATCH, ignore_errors=True)

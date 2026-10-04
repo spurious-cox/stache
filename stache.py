@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
 Stache - clipboard history for macOS
-Version: 2.12.0
+Version: 2.16.1
 
 A background (LSUIElement) agent that watches the general pasteboard and
 records everything copied to it - plain text and images alike - with the date
 and time of the capture and the name of the app it was copied from.  A global
 hotkey raises a floating picker: a grid of thumbnails and text cards, newest
-first, searchable and filterable.  Choosing a card puts that item back on the
+first (or, by preference, in the order they were collected), searchable and
+filterable.  Choosing a card puts that item back on the
 pasteboard, so the next Cmd-V (or `pbpaste`) hands it over.
 
 Behaviour:
@@ -33,6 +34,54 @@ typing Cmd-V for you - synthesising a keystroke is the one thing here that
 would have demanded Accessibility.
 
 History:
+  2.16.1 Pin and Unpin in the right-click menu act on the whole selection when
+         the card clicked is part of one, as Delete already did, and say how
+         many ("Pin 23 Clippings").  The card clicked decides which way it
+         goes: on a pinned card every selected clipping is unpinned, on an
+         unpinned card every one is pinned.
+  2.16.0 Clear History is gone - the button in Preferences and the item in the
+         menu bar menu.  One click away from deleting everything that is not
+         pinned was too close, whatever the confirmation said.  Deleting is
+         now always a choice of clippings: select them in the picker and
+         press ⌫ (⇧click or ⌘click to select several), or right-click and
+         choose Delete.  Retention - Keep at most, Delete after - still
+         trims the history by itself.  Preferences and the help say so.
+  2.15.1 Clear History says what it will do before it does it: how many
+         clippings go (text, images, notes and hidden ones), that pinned
+         ones stay, that saved filters stay but lose the deleted clippings,
+         and that it cannot be undone.  The button names the count, and
+         Cancel is the default, so a stray Return deletes nothing.
+  2.15.0 Right-click a clipping: Add to Filter lists the saved filters and
+         puts the clipping (or the whole selection) into one, with a tick
+         beside any that already hold it - choosing a ticked one takes it
+         out again.  Inside a filter made from a search there is also
+         Remove from "<name>".  A filter saved by an earlier version, which
+         still runs its search, becomes a fixed list the first time a
+         clipping is added to it.  Right-click the filter row to delete a
+         saved filter; the clippings stay.
+  2.14.1 A filter made from a search holds the clippings that search found,
+         and no others.  It used to keep the search words and run them again
+         on every look, so a filter named for a day or an app swallowed
+         everything copied afterwards - a screenshot pasted into this
+         conversation turned up in an insurance filter because both matched
+         "today".  The search field is cleared when the filter is made, as
+         before.  Filters saved by an earlier version still run their search.
+  2.14.0 Preferences has Save and Cancel.  Nothing takes effect while you
+         adjust the controls: Save applies every change at once (return
+         does the same), Cancel or Esc or the close button throws them away.
+         A change to layout or card size used to rebuild the picker the
+         moment the popup closed, once per control; now it happens once.
+  2.13.1 Preferences: the new "Show oldest first" row pushed "Open Stache at
+         login" down onto the Clear History button.  The panel is one row
+         taller, and the layout test now checks that the last row clears
+         the button.
+  2.13.0 "Show oldest first" in Preferences lays the picker out in reading
+         order: the first clipping collected at the top left, the newest
+         last, filling left to right and then downwards.  The order is the
+         capture time and nothing else, so recalling, editing, pinning or
+         hiding a clipping no longer carries it to the front - it stays
+         where it was collected.  The picker opens on the newest clipping,
+         scrolled into view at the far end.  Off by default.
   2.12.0 Check for Updates… in the menu bar menu asks GitHub for the newest
          release and offers its download page when it is newer than the
          running copy.
@@ -415,7 +464,7 @@ History:
   1.0.0  First release.
 """
 
-APP_VERSION = "2.12.0"
+APP_VERSION = "2.16.1"
 COPYRIGHT = "© 2026 Tim McCoy"
 APP_NAME = "Stache"
 BUNDLE_ID = "com.timmccoy.stache"
@@ -571,6 +620,7 @@ DEF_HELP_SCALE = "StacheHelpTextScale"    # help window text size, x1.0
 DEF_STRIP_PCT = "StacheStripWidthPercent"  # strip width, % of the screen
 DEF_CARD_SIZE = "StacheCardSize"          # "small", "medium" or "large"
 DEF_FILTERS = "StacheFilters"             # saved searches, as a JSON list
+DEF_OLDEST_FIRST = "StacheOldestFirst"    # reading order, by capture time
 
 # Control-Option-Command-Space.  49 is the Space key.
 DEFAULT_HOTKEY_CODE = 49
@@ -587,6 +637,7 @@ DEFAULTS = {
     DEF_STRIP_PCT: 60,
     DEF_HELP_SCALE: 100,   # per cent, because prefs store ints cleanly
     DEF_CARD_SIZE: "large",
+    DEF_OLDEST_FIRST: False,
 }
 
 # Pasteboard flags that mean "do not record this".  ConcealedType is what
@@ -1072,6 +1123,12 @@ class Store(object):
         """
         if isinstance(kind, tuple) and kind and kind[0] == "search":
             return self._search_clause(kind[1])
+        if isinstance(kind, tuple) and kind and kind[0] == "ids":
+            # A filter made from a search: exactly the clippings it found.
+            ids = list(kind[1])
+            if not ids:
+                return "0", []
+            return "id IN (%s)" % ",".join("?" * len(ids)), ids
         if kind == "image":
             return "kind = 'image'", []
         if kind == "note":
@@ -1154,14 +1211,23 @@ class Store(object):
             sql += " WHERE " + " AND ".join(where)
         # Ordered by last use, so a recalled clipping comes to the front —
         # without disturbing the capture time the card shows.
+        # Oldest-first is reading order and means the order COLLECTED, so it
+        # sorts on the capture time alone: recalling, editing, pinning or
+        # hiding must not move a clipping. The newest `limit` are chosen
+        # first and then turned round, so a long history shows its recent end.
+        oldest_first = pref(DEF_OLDEST_FIRST)
         # Newest first, full stop. Pinned clippings used to be forced to the
         # front of every list, which meant the picker did not open on the
         # thing just copied — the whole point of opening it. A pinned or
         # hidden clipping still reaches the front of its own filter, because
         # pinning and hiding set `changed` and that is what is sorted on.
-        sql += " ORDER BY COALESCE(changed, used, created) DESC LIMIT ?"
+        if oldest_first:
+            sql += " ORDER BY created DESC, id DESC LIMIT ?"
+        else:
+            sql += " ORDER BY COALESCE(changed, used, created) DESC LIMIT ?"
         args.append(limit)
-        return [Item(r) for r in self.db.execute(sql, args)]
+        found = [Item(r) for r in self.db.execute(sql, args)]
+        return found[::-1] if oldest_first else found
 
     def get(self, item_id):
         row = self.db.execute(
@@ -1858,8 +1924,28 @@ def _para(alignment=0, wrap=True):
     return p
 
 
+class FilterSegments(NSSegmentedControl):
+    """The filter row, which also answers a right-click: deleting a saved
+    filter was only possible by emptying the search and pressing a chord."""
+
+    def rightMouseDown_(self, event):
+        picker = getattr(self, "picker", None)
+        if picker is not None:
+            picker.filterContextMenu_view_(event, self)
+
+
+class FilterPopup(NSPopUpButton):
+    """The same right-click for the column layout's filter popup."""
+
+    def rightMouseDown_(self, event):
+        picker = getattr(self, "picker", None)
+        if picker is not None:
+            picker.filterContextMenu_view_(event, self)
+
+
 class GridView(NSView):
-    """Newest-first grid of clipboard cards with mouse and keyboard selection."""
+    """Grid of clipboard cards, newest first or oldest first by preference,
+    with mouse and keyboard selection."""
 
     def initWithFrame_(self, frame):
         self = objc.super(GridView, self).initWithFrame_(frame)
@@ -1983,7 +2069,7 @@ class GridView(NSView):
         previous_id = previous.id if previous is not None else None
         self._items = list(items)
         self._thumbs = {}
-        index = 0
+        index = len(self._items) - 1 if pref(DEF_OLDEST_FIRST) else 0
         if previous_id is not None:
             # Gone from this list — unpinned out of the Pinned filter,
             # searched away, deleted.  Select NOTHING rather than falling
@@ -2004,6 +2090,19 @@ class GridView(NSView):
                            if self._items and self._selected >= 0 else set())
         self._anchor = max(0, self._selected)
         self.relayout()
+
+    def selectNewest(self):
+        """Put the selection on the newest clipping and bring it into view.
+
+        Newest-first that is card 0 and the view already opens there; in
+        reading order it is the LAST card, at the far end of the strip, so
+        opening on the oldest clipping would hide the one wanted most."""
+        if not self._items:
+            return
+        self._selectOnly_(len(self._items) - 1 if pref(DEF_OLDEST_FIRST)
+                          else 0)
+        self.scrollSelectionIntoView()
+        self.setNeedsDisplay_(True)
 
     def scrollSelectionIntoView(self):
         """Keep the selected card where it can be seen.
@@ -2590,13 +2689,26 @@ def saved_filters():
         return []
     out = []
     for entry in raw:
-        if isinstance(entry, dict) and entry.get("name") and entry.get("query"):
-            out.append((str(entry["name"]), str(entry["query"])))
+        if not (isinstance(entry, dict) and entry.get("name")):
+            continue
+        if isinstance(entry.get("ids"), list):
+            out.append((str(entry["name"]),
+                        ("ids", tuple(int(i) for i in entry["ids"]))))
+        elif entry.get("query"):
+            # Saved by a version before 2.14.1: still a live search.
+            out.append((str(entry["name"]), ("search", str(entry["query"]))))
     return out
 
 
 def set_saved_filters(pairs):
-    set_pref(DEF_FILTERS, json.dumps([{"name": n, "query": q} for n, q in pairs]))
+    """Store (name, kind) pairs, kind being ("ids", ids) or ("search", q)."""
+    entries = []
+    for name, kind in pairs:
+        if kind[0] == "ids":
+            entries.append({"name": name, "ids": list(kind[1])})
+        else:
+            entries.append({"name": name, "query": kind[1]})
+    set_pref(DEF_FILTERS, json.dumps(entries))
 
 
 def filter_list():
@@ -2605,8 +2717,7 @@ def filter_list():
     Same shape throughout — (label, kind) — so nothing downstream needs to
     know which of the two it is holding.
     """
-    return list(FILTER_KINDS) + [(name, ("search", query))
-                                 for name, query in saved_filters()]
+    return list(FILTER_KINDS) + list(saved_filters())
 HELP_W = 48        # wide enough for the word "Help"
 SEARCH_W = 220                            # the search field, pinned right
 FILTER_X = 300                            # where the filters start, when there
@@ -2829,12 +2940,12 @@ class PickerController(NSObject):
         self.compact_filter = column or not filters_fit(self.plannedWidth(),
                                                       self.filters)
         if self.compact_filter:
-            self.filter = NSPopUpButton.alloc().initWithFrame_pullsDown_(
+            self.filter = FilterPopup.alloc().initWithFrame_pullsDown_(
                 NSMakeRect(12, 10, 150, 24), False)
             self.filter.addItemsWithTitles_([n for n, _ in self.filters])
             self.filter.selectItemAtIndex_(0)
         else:
-            self.filter = NSSegmentedControl.alloc().initWithFrame_(
+            self.filter = FilterSegments.alloc().initWithFrame_(
                 NSMakeRect(FILTER_X, 9, 380, 24))
             self.filter.setSegmentCount_(len(self.filters))
             for i, (label, _kind) in enumerate(self.filters):
@@ -2843,6 +2954,7 @@ class PickerController(NSObject):
             self.selectKindIndex_(0)
         self.filter.setTarget_(self)
         self.filter.setAction_("filterChanged:")
+        self.filter.picker = self
         header.addSubview_(self.filter)
 
         self.installShortcuts()
@@ -2945,6 +3057,12 @@ class PickerController(NSObject):
             self.previous_app = front
         self.reload()
         self._restoreFrame()
+        # Reading order puts the newest clipping at the far end, so the
+        # picker has to be told to open there. Done after the frame is
+        # restored: the strip's width, which the scroll depends on, is only
+        # final once the panel has taken its real size.
+        self.grid.relayout()
+        self.grid.selectNewest()
         # Activate first, then order front: an accessory app that orders a
         # window front before it is active can have that window hidden out
         # from under it before the activation lands.
@@ -3566,7 +3684,7 @@ class PickerController(NSObject):
             alert.setInformativeText_(
                 "A pinned clipping cannot be deleted while it is pinned — "
                 "that is what has been keeping it out of the way of the item "
-                "limit, the age limit and Clear History.\n\n"
+                "limit and the age limit.\n\n"
                 "Unpin it first (right-click the card, or ⌘-click it and "
                 "choose Unpin), then delete it as usual.")
         else:
@@ -3731,23 +3849,15 @@ class PickerController(NSObject):
                 self.status.setStringValue_(
                     "Type a search first — \u2318\u21e7F keeps it as a filter")
                 return
-            label = self.filters[self.selectedKindIndex()][0]
-            alert = NSAlert.alloc().init()
-            alert.setMessageText_("Remove the \u201c%s\u201d filter?" % label)
-            alert.setInformativeText_(
-                "The clippings stay. Only the filter goes.")
-            alert.addButtonWithTitle_("Remove")
-            alert.addButtonWithTitle_("Cancel")
-            if alert.runModal() != 1000:
-                return
-            set_saved_filters([(n, q) for n, q in saved_filters() if n != label])
-            self.selectKindIndex_(0)
-            self.app.rebuildPicker()
+            self.deleteSavedFilter_(self.filters[self.selectedKindIndex()][0])
             return
 
         alert = NSAlert.alloc().init()
         alert.setMessageText_("Keep this search as a filter")
-        alert.setInformativeText_("Searching for: %s" % query)
+        alert.setInformativeText_(
+            "Keeps the %d clipping%s shown now, matching: %s"
+            % (len(self.grid.items()),
+               "" if len(self.grid.items()) == 1 else "s", query))
         field = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 240, 24))
         field.setStringValue_(query[:24])
         alert.setAccessoryView_(field)
@@ -3757,12 +3867,100 @@ class PickerController(NSObject):
         if alert.runModal() != 1000:
             return
         name = str(field.stringValue() or "").strip() or query[:24]
-        existing = [(n, q) for n, q in saved_filters() if n != name]
-        set_saved_filters(existing + [(name, query)])
+        existing = [(n, k) for n, k in saved_filters() if n != name]
+        # The filter is the clippings on screen now, not the words that
+        # found them: the words would go on matching whatever is copied next.
+        found = tuple(item.id for item in self.grid.items())
+        set_saved_filters(existing + [(name, ("ids", found))])
         # The search that made the filter has been answered by the filter,
         # so it is cleared — leaving both in force would show the filter's
         # count against a list narrowed twice by the same words.
         self.search.setStringValue_("")
+        self.app.rebuildPicker()
+
+    def deleteSavedFilter_(self, label):
+        """Ask, then remove one saved filter. The clippings stay."""
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_("Remove the \u201c%s\u201d filter?" % label)
+        alert.setInformativeText_(
+            "The clippings stay. Only the filter goes.")
+        alert.addButtonWithTitle_("Remove")
+        alert.addButtonWithTitle_("Cancel")
+        self.holdOpen()
+        try:
+            answer = alert.runModal()
+        finally:
+            self.releaseHold()
+        if answer != 1000:
+            return
+        set_saved_filters([(n, k) for n, k in saved_filters() if n != label])
+        self.selectKindIndex_(0)
+        self.app.rebuildPicker()
+
+    def filterContextMenu_view_(self, event, view):
+        """Right-click on the filter row: delete any saved filter.
+
+        The row cannot say which filter was under the pointer — its segments
+        size themselves to their labels — so every saved filter is offered,
+        with no guessing."""
+        saved = saved_filters()
+        menu = NSMenu.alloc().initWithTitle_("Filters")
+        self._menu_filters = saved
+        if not saved:
+            entry = menu.addItemWithTitle_action_keyEquivalent_(
+                "No saved filters", None, "")
+            entry.setEnabled_(False)
+        for index, (name, _kind) in enumerate(saved):
+            entry = menu.addItemWithTitle_action_keyEquivalent_(
+                "Delete Filter \u201c%s\u2026" % (name + "\u201d"),
+                "menuDeleteFilter:", "")
+            entry.setTarget_(self)
+            entry.setTag_(index)
+        NSMenu.popUpContextMenu_withEvent_forView_(menu, event, view)
+
+    def menuDeleteFilter_(self, sender):
+        index = int(sender.tag())
+        if 0 <= index < len(self._menu_filters):
+            self.deleteSavedFilter_(self._menu_filters[index][0])
+
+    def _filterTargets_(self, item):
+        """The clippings a menu action means: the selection when the menu was
+        opened inside it, otherwise just the one clipping."""
+        chosen = self.grid.selectedItems()
+        return chosen if item in chosen else [item]
+
+    def _filterMembers_(self, kind):
+        """The clipping ids a saved filter holds right now, in order."""
+        if kind[0] == "ids":
+            return list(kind[1])
+        return [i.id for i in self.app.store.items(kind=kind, limit=100000)]
+
+    def menuAddToFilter_(self, sender):
+        index = int(sender.tag())
+        if not 0 <= index < len(self._menu_filters):
+            return
+        name, kind = self._menu_filters[index]
+        members = self._filterMembers_(kind)
+        wanted = [i.id for i in self._filterTargets_(self._menu_item)]
+        if all(i in members for i in wanted):
+            members = [i for i in members if i not in wanted]    # untick
+        else:
+            members += [i for i in wanted if i not in members]
+        self._saveFilter_members_(name, members)
+
+    def menuRemoveFromFilter_(self, sender):
+        index = self.selectedKindIndex()
+        name, kind = self.filters[index]
+        wanted = {i.id for i in self._filterTargets_(self._menu_item)}
+        self._saveFilter_members_(
+            name, [i for i in self._filterMembers_(kind) if i not in wanted])
+
+    def _saveFilter_members_(self, name, members):
+        """Store a filter as exactly these clippings. A filter saved by an
+        earlier version, which still ran its search, becomes a fixed list
+        here."""
+        set_saved_filters([(n, ("ids", tuple(members)) if n == name else k)
+                           for n, k in saved_filters()])
         self.app.rebuildPicker()
 
     def gridDidPreview_(self, item):
@@ -3864,6 +4062,34 @@ class PickerController(NSObject):
             self._share_services[index] = svc
         menu.setSubmenu_forItem_(share_menu, share_item)
         share_item.setEnabled_(bool(services))
+        # Filters made from a search are fixed lists, so adding a clipping
+        # to one is how it grows. A tick means the clipping (every clipping,
+        # for a selection) is already in it; choosing a ticked one takes it
+        # out. Hidden clippings stay out of every filter.
+        saved = saved_filters()
+        self._menu_filters = saved
+        add_item = menu.addItemWithTitle_action_keyEquivalent_(
+            "Add to Filter", None, "")
+        add_menu = NSMenu.alloc().initWithTitle_("Add to Filter")
+        targets = [t.id for t in self._filterTargets_(item)]
+        for index, (name, kind) in enumerate(saved):
+            members = set(self._filterMembers_(kind))
+            entry = add_menu.addItemWithTitle_action_keyEquivalent_(
+                name, "menuAddToFilter:", "")
+            entry.setTarget_(self)
+            entry.setTag_(index)
+            entry.setState_(1 if all(t in members for t in targets) else 0)
+        if not saved:
+            entry = add_menu.addItemWithTitle_action_keyEquivalent_(
+                "No filters yet \u2014 search, then \u2318\u21e7F", None, "")
+            entry.setEnabled_(False)
+        menu.setSubmenu_forItem_(add_menu, add_item)
+        add_item.setEnabled_(bool(saved) and not item.hidden)
+        current = self.currentKind()
+        if isinstance(current, tuple) and current[0] == "ids":
+            add("Remove from \u201c%s\u201d"
+                % self.filters[self.selectedKindIndex()][0],
+                "menuRemoveFromFilter:")
         # Editing in place is offered only for PINNED clippings: an unpinned
         # one is subject to the item cap and the age cap, so the edit would
         # be work the retention sweep deletes later.
@@ -3877,7 +4103,9 @@ class PickerController(NSObject):
                 if item.pinned else "Update From Clipboard (pin it first)",
                 "menuUpdateImage:", bool(item.pinned))
         menu.addItem_(NSMenuItem.separatorItem())
-        add("Unpin" if item.pinned else "Pin", "menuPin:")
+        many = len(self._filterTargets_(item))
+        add(("Unpin" if item.pinned else "Pin")
+            + (" %d Clippings" % many if many > 1 else ""), "menuPin:")
         add("Delete", "menuDelete:")
         return menu
 
@@ -4103,8 +4331,11 @@ class PickerController(NSObject):
         that moment is the worst possible time, so the filter falls back to
         All and the card stays selected and in view.
         """
+        # Like Delete, this acts on the whole selection when the card the
+        # menu was opened on is part of one; that card says which way.
         unpinning = bool(self._menu_item.pinned)
-        self.app.store.set_pinned(self._menu_item.id, not unpinning)
+        for target in self._filterTargets_(self._menu_item):
+            self.app.store.set_pinned(target.id, not unpinning)
         if unpinning and self.currentKind() == "pinned":
             self.selectKindIndex_(0)                    # All
         self.reload()
@@ -4248,8 +4479,8 @@ class EditorController(NSObject):
     """A plain editor for one note or pinned text clipping, saving in place.
 
     For a CAPTURE the pinned-only restriction is the point rather than a
-    limitation: a pinned clipping is exempt from the item cap, the age cap
-    and Clear History, so it is the only kind where editing is not work the
+    limitation: a pinned clipping is exempt from the item cap and the age
+    cap, so it is the only kind where editing is not work the
     retention sweep will quietly delete later.
 
     A NOTE is exempt from all of that by being a note, so it is editable
@@ -4385,7 +4616,7 @@ HELP_SECTIONS = (
     ("Getting it open", (
         ("%s", "open the picker from anywhere"),
         ("menu bar S", "About, Preferences, Help, Check for Updates, "
-                        "Open, Pause Capturing, Clear History and Quit. Deliberately no clippings: a "
+                        "Open, Pause Capturing and Quit. Deliberately no clippings: a "
                         "menu opens with one click and no authentication"),
     )),
     ("Choosing a clipping", (
@@ -4508,10 +4739,15 @@ HELP_SECTIONS = (
                        "ages out; a card in the last tenth of its life says "
                        "so in red"),
         ("Pin", "pinned clippings sort first and survive the item limit, "
-                "the age limit and Clear History — and cannot be deleted at "
+                "and the age limit — and cannot be deleted at "
                 "all until they are unpinned"),
         ("⇧click / ⌘click", "select a range, or add and remove one card at "
                             "a time; ⌫ then deletes all of them"),
+        ("deleting", "there is deliberately no Clear History. Select the "
+                     "clippings you want gone and press ⌫, or right-click "
+                     "and choose Delete; a pinned clipping must be unpinned "
+                     "first. To trim the history in bulk, lower Keep at "
+                     "most or Delete after in Preferences"),
         ("⌘+ / ⌘− / ⌘0", "in this window: bigger text, smaller text, "
                             "back to normal"),
         ("Strip / Column / Grid",
@@ -4523,7 +4759,8 @@ HELP_SECTIONS = (
                      "counts as a crash and brings the old copy back — so a "
                      "new version can appear not to install at all"),
         ("Preferences", "card size, layout, strip width, hotkey, how much "
-                        "history to keep, open at login"),
+                        "history to keep, oldest-first reading order, open at "
+                        "login"),
         ("in the shell", "`stache` lists it, `stache copy 3` recalls it"),
     )),
     ("What is never recorded", (
@@ -4679,6 +4916,7 @@ class PrefsController(NSObject):
             return None
         self.app = app
         self._monitor = None
+        self._chord = None      # (code, mods) recorded but not yet saved
         self._build()
         return self
 
@@ -4689,7 +4927,7 @@ class PrefsController(NSObject):
         mean nudging every number under it, and the Clear button ended up at
         y = -8, below the bottom edge of the panel.
         """
-        rows = 9
+        rows = 10
         height = TOP_PAD + rows * ROW_H + BOTTOM_PAD
         panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(0, 0, PREFS_W, height),
@@ -4716,7 +4954,7 @@ class PrefsController(NSObject):
             NSMakeRect(FIELD_X, row(0), 160, 26), False)
         self.card_menu.addItemsWithTitles_(["Large", "Medium", "Small"])
         self.card_menu.setTarget_(self)
-        self.card_menu.setAction_("cardSizeChanged:")
+        self.card_menu.setAction_("stage:")
         view.addSubview_(self.card_menu)
         view.addSubview_(_plain("bigger thumbnails", FIELD_X + 168,
                                 row(0) + 5, 180))
@@ -4726,7 +4964,7 @@ class PrefsController(NSObject):
             NSMakeRect(FIELD_X, row(1), 160, 26), False)
         self.layout_menu.addItemsWithTitles_(["Strip", "Column", "Grid"])
         self.layout_menu.setTarget_(self)
-        self.layout_menu.setAction_("layoutChanged:")
+        self.layout_menu.setAction_("stage:")
         view.addSubview_(self.layout_menu)
         view.addSubview_(_plain("one row, above the Dock", FIELD_X + 168,
                                 row(1) + 5, 180))
@@ -4735,7 +4973,7 @@ class PrefsController(NSObject):
         self.strip_pct = NSTextField.alloc().initWithFrame_(
             NSMakeRect(FIELD_X, row(2) + 2, 70, 22))
         self.strip_pct.setTarget_(self)
-        self.strip_pct.setAction_("stripWidthChanged:")
+        self.strip_pct.setAction_("stage:")
         view.addSubview_(self.strip_pct)
         view.addSubview_(_plain("% of the screen (wide, or tall in a column)",
                                 FIELD_X + 78,
@@ -4755,7 +4993,7 @@ class PrefsController(NSObject):
         self.max_items = NSTextField.alloc().initWithFrame_(
             NSMakeRect(FIELD_X, row(4) + 2, 70, 22))
         self.max_items.setTarget_(self)
-        self.max_items.setAction_("retentionChanged:")
+        self.max_items.setAction_("stage:")
         view.addSubview_(self.max_items)
         view.addSubview_(_plain("items  (0 = no limit)", FIELD_X + 78,
                                 row(4) + 4, 190))
@@ -4764,49 +5002,81 @@ class PrefsController(NSObject):
         self.max_days = NSTextField.alloc().initWithFrame_(
             NSMakeRect(FIELD_X, row(5) + 2, 70, 22))
         self.max_days.setTarget_(self)
-        self.max_days.setAction_("retentionChanged:")
+        self.max_days.setAction_("stage:")
         view.addSubview_(self.max_days)
         view.addSubview_(_plain("days  (0 = never)", FIELD_X + 78,
                                 row(5) + 4, 190))
 
         self.capture_images = _switch(
             "Capture images as well as text", row(6) + 4,
-            self, "captureImagesChanged:")
+            self, "stage:")
         view.addSubview_(self.capture_images)
 
 
+        self.oldest_first = _switch(
+            "Show oldest first (reading order)", row(7) + 4,
+            self, "stage:")
+        view.addSubview_(self.oldest_first)
+
         self.login_item = _switch(
-            "Open Stache at login", row(7) + 4, self, "loginItemChanged:")
+            "Open Stache at login", row(8) + 4, self, "stage:")
         view.addSubview_(self.login_item)
 
-        clear = NSButton.alloc().initWithFrame_(
-            NSMakeRect(FIELD_X, BOTTOM_PAD - 8, 150, 30))
-        clear.setTitle_("Clear History…")
-        clear.setBezelStyle_(1)
-        clear.setTarget_(self)
-        clear.setAction_("clearHistory:")
-        view.addSubview_(clear)
+        # There is deliberately no Clear History: one click from deleting
+        # everything unpinned was too close. Deleting is a choice of
+        # clippings, and this says how.
+        self.delete_note = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(20, BUTTONS_H + 4, 360, 40))
+        self.delete_note.setStringValue_(
+            "To delete clippings, select them in the picker and press \u232b "
+            "(\u21e7click or \u2318click selects several). A pinned "
+            "clipping must be unpinned first.")
+        self.delete_note.setEditable_(False)
+        self.delete_note.setBordered_(False)
+        self.delete_note.setDrawsBackground_(False)
+        self.delete_note.setFont_(NSFont.systemFontOfSize_(11))
+        self.delete_note.setTextColor_(NSColor.secondaryLabelColor())
+        self.delete_note.setLineBreakMode_(0)             # wrap
+        view.addSubview_(self.delete_note)
 
         version = _plain("Stache %s" % APP_VERSION, PREFS_W - 130,
-                         BOTTOM_PAD - 2, 110)
+                         BUTTONS_H + 14, 110)
         version.setAlignment_(1)
         version.setTextColor_(NSColor.tertiaryLabelColor())
         view.addSubview_(version)
 
+        self.save_button = NSButton.alloc().initWithFrame_(
+            NSMakeRect(PREFS_W - 20 - 84, 14, 84, 30))
+        self.save_button.setTitle_("Save")
+        self.save_button.setBezelStyle_(1)
+        self.save_button.setKeyEquivalent_("\r")
+        self.save_button.setTarget_(self)
+        self.save_button.setAction_("save:")
+        view.addSubview_(self.save_button)
+        self.cancel_button = NSButton.alloc().initWithFrame_(
+            NSMakeRect(PREFS_W - 20 - 84 - 92, 14, 84, 30))
+        self.cancel_button.setTitle_("Cancel")
+        self.cancel_button.setBezelStyle_(1)
+        self.cancel_button.setKeyEquivalent_("\x1b")
+        self.cancel_button.setTarget_(self)
+        self.cancel_button.setAction_("cancel:")
+        view.addSubview_(self.cancel_button)
+
         self.panel = panel
 
     def show(self):
+        self._chord = None
         self.refresh()
         self.panel.center()
         self.panel.makeKeyAndOrderFront_(None)
         NSApp.activateIgnoringOtherApps_(True)
 
     def refresh(self):
-        self.hotkey_button.setTitle_(
-            hotkey_label(pref(DEF_HOTKEY_CODE), pref(DEF_HOTKEY_MODS)))
+        self._showChord()
         self.max_items.setStringValue_(str(pref(DEF_MAX_ITEMS)))
         self.max_days.setStringValue_(str(pref(DEF_MAX_DAYS)))
         self.capture_images.setState_(1 if pref(DEF_CAPTURE_IMAGES) else 0)
+        self.oldest_first.setState_(1 if pref(DEF_OLDEST_FIRST) else 0)
         self.login_item.setState_(1 if os.path.exists(AGENT_PLIST) else 0)
         self.layout_menu.selectItemAtIndex_(
             {"strip": 0, "column": 1, "grid": 2}.get(pref(DEF_LAYOUT), 0))
@@ -4816,7 +5086,19 @@ class PrefsController(NSObject):
         self.strip_pct.setStringValue_(str(pref(DEF_STRIP_PCT)))
         self.strip_pct.setEnabled_(pref(DEF_LAYOUT) != "grid")
 
+    def _showChord(self):
+        code, mods = self._chord or (pref(DEF_HOTKEY_CODE),
+                                     pref(DEF_HOTKEY_MODS))
+        self.hotkey_button.setTitle_(hotkey_label(code, mods))
+
     # -- actions ----------------------------------------------------------
+
+    def stage_(self, sender):
+        """A control changed.  Nothing is applied until Save; the only
+        thing that follows a control live is whether strip width means
+        anything for the layout now chosen."""
+        self.strip_pct.setEnabled_(
+            self.layout_menu.indexOfSelectedItem() != 2)
 
     def recordHotkey_(self, sender):
         if self._monitor is not None:
@@ -4833,104 +5115,101 @@ class PrefsController(NSObject):
             if mods == 0:
                 # A bare key would be claimed system-wide and swallowed from
                 # every app on the Mac.  Refuse rather than break the keyboard.
-                self.refresh()
+                self._showChord()
                 _alert("That chord needs a modifier",
                        "Hold at least one of ⌃ ⌥ ⇧ ⌘ along with the key. "
                        "A hotkey with no modifier would be taken away from "
                        "every other app.")
                 return None
-            set_pref(DEF_HOTKEY_CODE, code)
-            set_pref(DEF_HOTKEY_MODS, mods)
-            self.app.applyHotkey()
-            self.refresh()
+            self._chord = (code, mods)       # applied by Save
+            self._showChord()
             return None
 
         self._monitor = NSEvent.addLocalMonitorForEventsMatchingMask_handler_(
             NSEventMaskKeyDown, handler)
 
-    def retentionChanged_(self, sender):
-        try:
-            items = max(0, int(self.max_items.stringValue()))
-            days = max(0, int(self.max_days.stringValue()))
-        except ValueError:
-            self.refresh()
-            return
-        set_pref(DEF_MAX_ITEMS, items)
-        set_pref(DEF_MAX_DAYS, days)
-        self.app.store.prune(items, days)
-        self.refresh()
-
-    def layoutChanged_(self, sender):
-        chosen = ("strip", "column", "grid")[
-            max(0, min(2, sender.indexOfSelectedItem()))]
-        if chosen == pref(DEF_LAYOUT):
-            return
-        set_pref(DEF_LAYOUT, chosen)
-        # Each arrangement is a different panel — different style limits,
-        # scrollers and row logic — so the picker is rebuilt rather than
-        # reconfigured in place.
-        self.app.rebuildPicker()
-        self.refresh()
-
     def windowWillClose_(self, note):
+        # Closing by any route but Save discards what was staged, so the
+        # panel never reopens showing an edit that was not applied.
+        if self._monitor is not None:
+            NSEvent.removeMonitor_(self._monitor)
+            self._monitor = None
+        self._chord = None
+        self.refresh()
         picker = getattr(self.app, "picker", None) if self.app else None
         if picker is not None:
             picker.releaseHold()
 
-    def cardSizeChanged_(self, sender):
-        chosen = ("large", "medium", "small")[sender.indexOfSelectedItem()]
-        if chosen == pref(DEF_CARD_SIZE):
-            return
-        set_pref(DEF_CARD_SIZE, chosen)
-        apply_card_size()
-        # The strip's height is a function of the card height, so the frame
-        # saved at the old size no longer describes this panel.
-        defaults().removeObjectForKey_(DEF_STRIP_FRAME)
-        self.app.rebuildPicker()
-        self.refresh()
+    def save_(self, sender):
+        """Apply every change at once, then close.
 
-    def stripWidthChanged_(self, sender):
+        The picker is rebuilt at most once, whatever combination of layout
+        and card size changed: the rebuild is what used to make each control
+        look like a crash."""
         try:
-            percent = max(20, min(100, int(sender.stringValue())))
+            items = max(0, int(self.max_items.stringValue()))
+            days = max(0, int(self.max_days.stringValue()))
+            percent = max(20, min(100, int(self.strip_pct.stringValue())))
         except ValueError:
-            self.refresh()
+            _alert("Check the numbers",
+                   "Keep at most, Delete after and Strip size each take a "
+                   "whole number.")
             return
-        set_pref(DEF_STRIP_PCT, percent)
-        # Forget the remembered frame so the new width is actually used.
-        defaults().removeObjectForKey_(DEF_STRIP_FRAME)
-        self.refresh()
-
-    def captureImagesChanged_(self, sender):
-        set_pref(DEF_CAPTURE_IMAGES, bool(sender.state()))
-
-    def loginItemChanged_(self, sender):
-        if sender.state():
-            install_login_item()
-        else:
-            remove_login_item()
-        self.refresh()
-
-    def clearHistory_(self, sender):
-        alert = NSAlert.alloc().init()
-        alert.setMessageText_("Clear the clipboard history?")
-        alert.setInformativeText_(
-            "Every unpinned clipping and its image file is deleted. "
-            "This cannot be undone.")
-        icon = own_icon()
-        if icon is not None:
-            alert.setIcon_(icon)
-        alert.addButtonWithTitle_("Clear")
-        alert.addButtonWithTitle_("Cancel")
-        if alert.runModal() == 1000:
-            self.app.store.clear(keep_pinned=True)
+        layout = ("strip", "column", "grid")[
+            max(0, min(2, self.layout_menu.indexOfSelectedItem()))]
+        card = ("large", "medium", "small")[
+            max(0, min(2, self.card_menu.indexOfSelectedItem()))]
+        rebuild = layout != pref(DEF_LAYOUT) or card != pref(DEF_CARD_SIZE)
+        if card != pref(DEF_CARD_SIZE):
+            set_pref(DEF_CARD_SIZE, card)
+            apply_card_size()
+            # The strip's height is a function of the card height, so the
+            # frame saved at the old size no longer describes this panel.
+            defaults().removeObjectForKey_(DEF_STRIP_FRAME)
+        if percent != pref(DEF_STRIP_PCT):
+            set_pref(DEF_STRIP_PCT, percent)
+            # Forget the remembered frame so the new width is used.
+            defaults().removeObjectForKey_(DEF_STRIP_FRAME)
+        if layout != pref(DEF_LAYOUT):
+            set_pref(DEF_LAYOUT, layout)
+        if self._chord is not None:
+            set_pref(DEF_HOTKEY_CODE, self._chord[0])
+            set_pref(DEF_HOTKEY_MODS, self._chord[1])
+            self.app.applyHotkey()
+            self._chord = None
+        set_pref(DEF_CAPTURE_IMAGES, bool(self.capture_images.state()))
+        order_changed = (bool(self.oldest_first.state())
+                         != bool(pref(DEF_OLDEST_FIRST)))
+        set_pref(DEF_OLDEST_FIRST, bool(self.oldest_first.state()))
+        if (items, days) != (pref(DEF_MAX_ITEMS), pref(DEF_MAX_DAYS)):
+            set_pref(DEF_MAX_ITEMS, items)
+            set_pref(DEF_MAX_DAYS, days)
+            self.app.store.prune(items, days)
+        if bool(self.login_item.state()) != os.path.exists(AGENT_PLIST):
+            if self.login_item.state():
+                install_login_item()
+            else:
+                remove_login_item()
+        self.panel.orderOut_(None)
+        self.windowWillClose_(None)
+        if rebuild:
+            self.app.rebuildPicker()
+        elif order_changed:
             self.app.picker.reload()
+            self.app.picker.grid.selectNewest()
+
+    def cancel_(self, sender):
+        """Throw the changes away; windowWillClose_ resets the controls."""
+        self.panel.orderOut_(None)
+        self.windowWillClose_(None)
 
 
 PREFS_W = 520
 FIELD_X = 148
 ROW_H = 32
 TOP_PAD = 18
-BOTTOM_PAD = 54          # room for Clear History under the last row
+BUTTONS_H = 54           # Save and Cancel along the bottom edge
+BOTTOM_PAD = BUTTONS_H + 54    # and the note on deleting above them
 
 
 def _switch(title, y, target, action):
@@ -5384,9 +5663,6 @@ class StacheApp(NSObject):
         self.pause_item = menu.addItemWithTitle_action_keyEquivalent_(
             "Pause Capturing", "menuPause:", "")
         self.pause_item.setTarget_(self)
-        clear = menu.addItemWithTitle_action_keyEquivalent_(
-            "Clear History…", "menuClear:", "")
-        clear.setTarget_(self)
         menu.addItem_(NSMenuItem.separatorItem())
         quit_item = menu.addItemWithTitle_action_keyEquivalent_(
             "Quit Stache", "menuQuit:", "q")
@@ -5560,10 +5836,6 @@ class StacheApp(NSObject):
             self.last_change = int(
                 NSPasteboard.generalPasteboard().changeCount())
         self.refreshMenu()
-
-    def menuClear_(self, sender):
-        NSApp.activateIgnoringOtherApps_(True)
-        self.prefs.clearHistory_(sender)
 
     def menuPrefs_(self, sender):
         # Opening Preferences takes key from the picker, and the picker
