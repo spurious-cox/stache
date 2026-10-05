@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Stache - clipboard history for macOS
-Version: 2.16.1
+Version: 2.16.2
 
 A background (LSUIElement) agent that watches the general pasteboard and
 records everything copied to it - plain text and images alike - with the date
@@ -34,6 +34,9 @@ typing Cmd-V for you - synthesising a keystroke is the one thing here that
 would have demanded Accessibility.
 
 History:
+  2.16.2 The filter row starts closer to the left edge of the strip: 190pt in,
+         where it was 300.  The status line ("70 items · 1.1 MB") needs about
+         110pt, so it keeps its place and the filters take the rest.
   2.16.1 Pin and Unpin in the right-click menu act on the whole selection when
          the card clicked is part of one, as Delete already did, and say how
          many ("Pin 23 Clippings").  The card clicked decides which way it
@@ -464,7 +467,7 @@ History:
   1.0.0  First release.
 """
 
-APP_VERSION = "2.16.1"
+APP_VERSION = "2.16.2"
 COPYRIGHT = "© 2026 Tim McCoy"
 APP_NAME = "Stache"
 BUNDLE_ID = "com.timmccoy.stache"
@@ -2720,7 +2723,7 @@ def filter_list():
     return list(FILTER_KINDS) + list(saved_filters())
 HELP_W = 48        # wide enough for the word "Help"
 SEARCH_W = 220                            # the search field, pinned right
-FILTER_X = 300                            # where the filters start, when there
+FILTER_X = 190                            # where the filters start, when there
                                           # is room for them there
 
 SOURCE_ICON = 16                          # the source app badge on a card
