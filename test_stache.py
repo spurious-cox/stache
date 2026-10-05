@@ -924,6 +924,57 @@ def test_add_to_filter():
     store.close()
 
 
+def test_narrow_header():
+    """The filter row becomes a popup as the strip narrows, and the header
+    keeps everything it shows inside its width."""
+    print("narrow header")
+    NSApplication.sharedApplication()
+    store = stache.Store(os.path.join(SCRATCH, "narrow.sqlite3"))
+    store.add_text("hello", "Safari")
+    stache.set_saved_filters([("StateFarmIns 10/04/26", ("ids", (1,)))])
+    picker = stache.PickerController.alloc().initWithApp_(FakeApp(store))
+    if not picker.isStrip():
+        stache.set_saved_filters([])
+        store.close()
+        return
+    header = picker.header
+    h = header.frame().size.height
+    wide = None
+    for width in (2300, 1500, 1000, 700, 520, 400, 320):
+        header.setFrameSize_((width, h))
+        inside = all(v.isHidden() or (v.frame().origin.x >= -0.5 and
+                     v.frame().origin.x + v.frame().size.width <= width + 0.5)
+                     for v in header.subviews())
+        check("at %dpt every shown control is inside the header" % width,
+              inside, str([(v.className(), round(v.frame().origin.x),
+                            round(v.frame().size.width))
+                           for v in header.subviews() if not v.isHidden()]))
+        if width == 2300:
+            check("wide: the filters are a segmented row",
+                  not picker.compact_filter)
+        if width == 700:
+            check("narrow: the filters have become a popup",
+                  picker.compact_filter)
+        if width == 320:
+            check("very narrow: Help gives way", picker.help_button.isHidden())
+        if width in (520, 400, 320):
+            pf, sf = picker.filter.frame(), picker.search.frame()
+            check("at %dpt the popup never overlaps the search field" % width,
+                  picker.search.isHidden() or
+                  pf.origin.x + pf.size.width <= sf.origin.x + 0.5,
+                  "popup ends %.0f, search starts %.0f"
+                  % (pf.origin.x + pf.size.width, sf.origin.x))
+        if width == 320:
+            check("and below the room for a usable search it is hidden",
+                  picker.search.isHidden())
+    picker.selectKindIndex_(1)
+    header.setFrameSize_((2300, h))
+    check("the chosen filter survives the change back",
+          picker.selectedKindIndex() == 1, str(picker.selectedKindIndex()))
+    stache.set_saved_filters([])
+    store.close()
+
+
 def test_render():
     print("render")
     NSApplication.sharedApplication()
@@ -1427,6 +1478,7 @@ if __name__ == "__main__":
         test_order()
         test_reading_order()
         test_add_to_filter()
+        test_narrow_header()
         test_render()
     finally:
         shutil.rmtree(SCRATCH, ignore_errors=True)

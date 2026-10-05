@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Stache - clipboard history for macOS
-Version: 2.16.2
+Version: 2.17.1
 
 A background (LSUIElement) agent that watches the general pasteboard and
 records everything copied to it - plain text and images alike - with the date
@@ -34,6 +34,24 @@ typing Cmd-V for you - synthesising a keystroke is the one thing here that
 would have demanded Accessibility.
 
 History:
+  2.17.1 In a very narrow strip the filter popup took the whole row and the
+         search field was left as a magnifier and one letter underneath it.
+         The popup now never overlaps the search field: below the room a
+         usable search needs (110pt beside the popup) the search field is
+         hidden and the popup takes the width - unless something is typed in
+         it, in which case it stays, because a hidden search that is still
+         narrowing the list would be a trap.
+  2.17.0 The header copes with a narrow strip.  The filter row is a popup
+         once it no longer fits - and now changes over WHILE you resize, not
+         only when the picker is built, so shrinking a strip no longer leaves
+         a row of filters running off the edge.  In a strip the popup sits
+         on the same single row as the search field; as the width shrinks,
+         the status line goes first, then the Help button, then the search
+         field narrows.  (Help is still on ⌘/ and in the menu bar menu.)
+         The title bar sheds its copyright, then its version, before they
+         can run into the name or the traffic lights.
+         Grid layout, which was handed the column's two-row header by
+         mistake once its filters stopped fitting, gets the single row too.
   2.16.2 The filter row starts closer to the left edge of the strip: 190pt in,
          where it was 300.  The status line ("70 items · 1.1 MB") needs about
          110pt, so it keeps its place and the filters take the rest.
@@ -467,7 +485,7 @@ History:
   1.0.0  First release.
 """
 
-APP_VERSION = "2.16.2"
+APP_VERSION = "2.17.1"
 COPYRIGHT = "© 2026 Tim McCoy"
 APP_NAME = "Stache"
 BUNDLE_ID = "com.timmccoy.stache"
@@ -2723,6 +2741,7 @@ def filter_list():
     return list(FILTER_KINDS) + list(saved_filters())
 HELP_W = 48        # wide enough for the word "Help"
 SEARCH_W = 220                            # the search field, pinned right
+SEARCH_MIN = 110                          # narrowest search worth showing
 FILTER_X = 190                            # where the filters start, when there
                                           # is room for them there
 
@@ -2883,6 +2902,7 @@ class PickerController(NSObject):
             frame, style, NSBackingStoreBuffered, False)
         panel.setTitle_("Stache")
         decorate_titlebar(panel, compact=column)
+        adapt_titlebar(panel)
         panel.setReleasedWhenClosed_(False)
         panel.setDelegate_(self)
         if strip:
@@ -2942,22 +2962,7 @@ class PickerController(NSObject):
         self.filters = filter_list()
         self.compact_filter = column or not filters_fit(self.plannedWidth(),
                                                       self.filters)
-        if self.compact_filter:
-            self.filter = FilterPopup.alloc().initWithFrame_pullsDown_(
-                NSMakeRect(12, 10, 150, 24), False)
-            self.filter.addItemsWithTitles_([n for n, _ in self.filters])
-            self.filter.selectItemAtIndex_(0)
-        else:
-            self.filter = FilterSegments.alloc().initWithFrame_(
-                NSMakeRect(FILTER_X, 9, 380, 24))
-            self.filter.setSegmentCount_(len(self.filters))
-            for i, (label, _kind) in enumerate(self.filters):
-                self.filter.setLabel_forSegment_(label, i)
-            self.filter.setTrackingMode_(NSSegmentSwitchTrackingSelectOne)
-            self.selectKindIndex_(0)
-        self.filter.setTarget_(self)
-        self.filter.setAction_("filterChanged:")
-        self.filter.picker = self
+        self._makeFilterControl()
         header.addSubview_(self.filter)
 
         self.installShortcuts()
@@ -3363,6 +3368,9 @@ class PickerController(NSObject):
         # The close button: everything Esc does, including the relock.
         self.hide()
 
+    def windowDidResize_(self, note):
+        adapt_titlebar(self.panel)
+
     def cancelOperation_(self, sender):        # Esc
         self.hide()
 
@@ -3394,6 +3402,37 @@ class PickerController(NSObject):
             return self.filters[index][1]
         return None
 
+    def _makeFilterControl(self):
+        """The filter control for the current style: a popup carrying every
+        filter, or one segment per filter."""
+        if self.compact_filter:
+            self.filter = FilterPopup.alloc().initWithFrame_pullsDown_(
+                NSMakeRect(12, 10, 150, 24), False)
+            self.filter.addItemsWithTitles_([n for n, _ in self.filters])
+            self.filter.selectItemAtIndex_(0)
+        else:
+            self.filter = FilterSegments.alloc().initWithFrame_(
+                NSMakeRect(FILTER_X, 9, 380, 24))
+            self.filter.setSegmentCount_(len(self.filters))
+            for i, (label, _kind) in enumerate(self.filters):
+                self.filter.setLabel_forSegment_(label, i)
+            self.filter.setTrackingMode_(NSSegmentSwitchTrackingSelectOne)
+            self.selectKindIndex_(0)
+        self.filter.setTarget_(self)
+        self.filter.setAction_("filterChanged:")
+        self.filter.picker = self
+
+    def _swapFilterControl_(self, compact):
+        """Change between the segmented row and the popup, keeping the
+        chosen filter."""
+        index = self.selectedKindIndex()
+        self.filter.removeFromSuperview()
+        self.compact_filter = compact
+        self._makeFilterControl()
+        self.header.addSubview_(self.filter)
+        self.selectKindIndex_(index)
+        self._refreshFilters_(str(self.search.stringValue() or ""))
+
     def _layoutHeader(self):
         """Place the header by measurement, not by fixed columns.
 
@@ -3405,7 +3444,14 @@ class PickerController(NSObject):
         the status line takes whatever is left.
         """
         width = self.header.frame().size.width
-        if getattr(self, "compact_filter", False):
+        if not self.isColumn():
+            # The row either fits or it does not, and that can change as the
+            # strip is dragged narrower, so it is decided here and not once
+            # at build time.
+            fits = filters_fit(width, self.filters)
+            if fits == getattr(self, "compact_filter", False):
+                self._swapFilterControl_(not fits)
+        if self.isColumn():
             # Row one: the search field, full width. Row two: the filter and
             # what is left of the status line, with help on the right.
             if self.brand is not None:
@@ -3432,6 +3478,40 @@ class PickerController(NSObject):
             self.status.setFrame_(
                 NSMakeRect(left, 12, max(30, width - left - 46), 18))
             return
+        if getattr(self, "compact_filter", False):
+            # One row: popup, status, Help, search. Whatever does not fit
+            # goes, least important first - status, then Help - and the
+            # search field gives up width last.
+            self.filter.sizeToFit()
+            natural = max(90.0, self.filter.frame().size.width)
+            typed = bool(str(self.search.stringValue() or ""))
+            show_search = typed or width - 24 - 8 - natural >= SEARCH_MIN
+            if show_search:
+                pw = max(90.0, min(natural,
+                                   width - 24 - 8 - SEARCH_MIN))
+            else:
+                pw = max(90.0, min(natural, width - 24))
+            avail = width - 24 - pw - 8
+            show_help = show_search and avail >= SEARCH_W + HELP_W + 8 + 40
+            show_status = show_search and \
+                avail >= SEARCH_W + HELP_W + 8 + 110
+            search_w = max(float(SEARCH_MIN), min(float(SEARCH_W), avail))
+            self.search.setHidden_(not show_search)
+            self.filter.setFrame_(NSMakeRect(12, 9, pw, 25))
+            self.search.setFrame_(
+                NSMakeRect(width - 12 - search_w, 8, search_w, 26))
+            self.help_button.setHidden_(not show_help)
+            self.help_button.setFrame_(
+                NSMakeRect(width - 12 - search_w - 8 - HELP_W, 9, HELP_W, 24))
+            self.status.setHidden_(not show_status)
+            left = 12 + pw + 8
+            right = width - 12 - search_w - 8 - (HELP_W + 8 if show_help else 0)
+            self.status.setFrame_(
+                NSMakeRect(left, 12, max(30, right - left), 18))
+            return
+        self.help_button.setHidden_(False)
+        self.status.setHidden_(False)
+        self.search.setHidden_(False)
         self.filter.sizeToFit()
         filters_w = self.filter.frame().size.width
         search_x = width - 12 - SEARCH_W
@@ -5257,6 +5337,16 @@ def _bar_label(text, align):
     field.setAlignment_(align)
     field.sizeToFit()
     return field
+
+
+def adapt_titlebar(window):
+    """Hide the title bar's copyright and then its version when the window
+    is too narrow for them beside the name: below about 560pt the copyright
+    would touch the name, below about 380pt the version would too."""
+    width = window.frame().size.width
+    for controller in window.titlebarAccessoryViewControllers():
+        left = controller.layoutAttribute() == NSLayoutAttributeLeft
+        controller.setHidden_(width < (380 if left else 560))
 
 
 def decorate_titlebar(window, compact=False):
