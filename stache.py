@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Stache - clipboard history for macOS
-Version: 2.18.1
+Version: 2.19.0
 
 A background (LSUIElement) agent that watches the general pasteboard and
 records everything copied to it - plain text and images alike - with the date
@@ -34,6 +34,12 @@ typing Cmd-V for you - synthesising a keystroke is the one thing here that
 would have demanded Accessibility.
 
 History:
+  2.19.0 Smallest is replaced by Custom: you choose the card's width and
+         height.  Every entry in the Card size menu now shows its dimensions
+         ("Large (272 x 220)"), and Custom starts at 160 x 100, which is what
+         Smallest was.  Width runs 120-400 and height 80-400.  Like Smallest,
+         Custom leaves out the source application's icon, since the line
+         under each card names the app.  A saved "smallest" becomes Custom.
   2.18.1 Smallest is 100pt tall, down from 132: about four lines of text or a
          55pt thumbnail between the date and the source line.
   2.18.0 A fourth card size, Smallest, for a narrow strip or column.  It leaves
@@ -491,7 +497,7 @@ History:
   1.0.0  First release.
 """
 
-APP_VERSION = "2.18.1"
+APP_VERSION = "2.19.0"
 COPYRIGHT = "© 2026 Tim McCoy"
 APP_NAME = "Stache"
 BUNDLE_ID = "com.timmccoy.stache"
@@ -645,7 +651,9 @@ DEF_LAYOUT = "StacheLayout"               # "strip", "column" or "grid"
 DEF_COLUMN_FRAME = "StacheColumnFrame"    # column layout's saved frame
 DEF_HELP_SCALE = "StacheHelpTextScale"    # help window text size, x1.0
 DEF_STRIP_PCT = "StacheStripWidthPercent"  # strip width, % of the screen
-DEF_CARD_SIZE = "StacheCardSize"          # "smallest", "small", "medium" or "large"
+DEF_CARD_SIZE = "StacheCardSize"          # "large", "medium", "small" or "custom"
+DEF_CUSTOM_W = "StacheCustomCardW"        # Custom card size, in points
+DEF_CUSTOM_H = "StacheCustomCardH"
 DEF_FILTERS = "StacheFilters"             # saved searches, as a JSON list
 DEF_OLDEST_FIRST = "StacheOldestFirst"    # reading order, by capture time
 
@@ -664,6 +672,8 @@ DEFAULTS = {
     DEF_STRIP_PCT: 60,
     DEF_HELP_SCALE: 100,   # per cent, because prefs store ints cleanly
     DEF_CARD_SIZE: "large",
+    DEF_CUSTOM_W: 160,
+    DEF_CUSTOM_H: 100,
     DEF_OLDEST_FIRST: False,
 }
 
@@ -1911,13 +1921,35 @@ def carbon_mods(ns_flags):
 # only the cards the scroller has exposed keeps that flat.
 
 CARD_SIZES = {                       # name -> (width, height)
-    "smallest": (160, 100),
     "small": (190, 158),
     "medium": (230, 188),
     "large": (272, 220),
 }
 CARD_W, CARD_H = CARD_SIZES["large"]
-NO_SOURCE_ICON = ("smallest",)      # sizes whose caption says it in words
+NO_SOURCE_ICON = ("custom",)        # sizes whose caption says it in words
+CUSTOM_W_RANGE = (120, 400)
+CUSTOM_H_RANGE = (80, 400)
+
+
+def card_size_name():
+    """The card size in force: large, medium, small or custom. A "smallest"
+    saved by 2.18 reads as custom, which starts at the same measurements."""
+    name = str(pref(DEF_CARD_SIZE))
+    if name == "smallest":
+        return "custom"
+    return name if name in CARD_SIZES or name == "custom" else "large"
+
+
+def card_dims(name):
+    """(width, height) of a named card size; custom comes from preferences,
+    clamped so a typo cannot make a card nobody can read."""
+    if name == "custom":
+        w = max(CUSTOM_W_RANGE[0], min(CUSTOM_W_RANGE[1],
+                                       int(pref(DEF_CUSTOM_W))))
+        h = max(CUSTOM_H_RANGE[0], min(CUSTOM_H_RANGE[1],
+                                       int(pref(DEF_CUSTOM_H))))
+        return w, h
+    return CARD_SIZES.get(name, CARD_SIZES["large"])
 GAP, MARGIN = 12, 12
 # The card is a picture with a caption above and below it, rather than a
 # picture sharing the card with a footer: the date goes on top, the source
@@ -1934,8 +1966,7 @@ def apply_card_size():
     places a card reads these at the moment it needs them."""
     global CARD_W, CARD_H, THUMB_BOX_H, STRIP_CONTENT_H, STRIP_H
     global COLUMN_CONTENT_W
-    CARD_W, CARD_H = CARD_SIZES.get(str(pref(DEF_CARD_SIZE)),
-                                    CARD_SIZES["large"])
+    CARD_W, CARD_H = card_dims(card_size_name())
     THUMB_BOX_H = CARD_H - 2 * CARD_PAD - DATE_H - META_H - 6
     STRIP_CONTENT_H = HEADER_H + 2 * MARGIN + CARD_H + 18 + HINT_H
     STRIP_H = STRIP_CONTENT_H + TITLE_H
@@ -2287,7 +2318,7 @@ class GridView(NSView):
         # The source application's icon sits at the bottom right of the
         # card, on the same line as where it came from.  The text gives up
         # the room first so it can never run underneath.
-        icon = (None if str(pref(DEF_CARD_SIZE)) in NO_SOURCE_ICON
+        icon = (None if card_size_name() in NO_SOURCE_ICON
                 else app_icon(item.app))
         if icon is not None:
             spot = NSMakeRect(rect.origin.x + CARD_W - CARD_PAD - SOURCE_ICON,
@@ -5043,13 +5074,25 @@ class PrefsController(NSObject):
 
         view.addSubview_(_right_label("Card size:", row(0) + 5))
         self.card_menu = NSPopUpButton.alloc().initWithFrame_pullsDown_(
-            NSMakeRect(FIELD_X, row(0), 160, 26), False)
-        self.card_menu.addItemsWithTitles_(["Large", "Medium", "Small", "Smallest"])
+            NSMakeRect(FIELD_X, row(0), 176, 26), False)
+        self.card_menu.addItemsWithTitles_(
+            ["Large", "Medium", "Small", "Custom"])
         self.card_menu.setTarget_(self)
         self.card_menu.setAction_("stage:")
         view.addSubview_(self.card_menu)
-        view.addSubview_(_plain("bigger thumbnails", FIELD_X + 168,
-                                row(0) + 5, 180))
+        # Custom's width and height, live only while Custom is chosen.
+        self.custom_w = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(FIELD_X + 188, row(0) + 2, 48, 22))
+        self.custom_h = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(FIELD_X + 188 + 48 + 20, row(0) + 2, 48, 22))
+        for field in (self.custom_w, self.custom_h):
+            field.setTarget_(self)
+            field.setAction_("stage:")
+            view.addSubview_(field)
+        view.addSubview_(_plain("\u00d7", FIELD_X + 188 + 48 + 5,
+                                row(0) + 4, 14))
+        view.addSubview_(_plain("points", FIELD_X + 188 + 48 + 20 + 48 + 6,
+                                row(0) + 4, 60))
 
         view.addSubview_(_right_label("Layout:", row(1) + 5))
         self.layout_menu = NSPopUpButton.alloc().initWithFrame_pullsDown_(
@@ -5172,11 +5215,30 @@ class PrefsController(NSObject):
         self.login_item.setState_(1 if os.path.exists(AGENT_PLIST) else 0)
         self.layout_menu.selectItemAtIndex_(
             {"strip": 0, "column": 1, "grid": 2}.get(pref(DEF_LAYOUT), 0))
+        # Each choice says how big it is. Custom's own entry follows what is
+        # typed beside it, so the menu never disagrees with the fields.
+        self.custom_w.setStringValue_(str(card_dims("custom")[0]))
+        self.custom_h.setStringValue_(str(card_dims("custom")[1]))
+        self._titleCardMenu()
         self.card_menu.selectItemAtIndex_(
-            {"large": 0, "medium": 1, "small": 2, "smallest": 3}.get(
-                str(pref(DEF_CARD_SIZE)), 0))
+            {"large": 0, "medium": 1, "small": 2, "custom": 3}.get(
+                card_size_name(), 0))
+        self.custom_w.setEnabled_(card_size_name() == "custom")
+        self.custom_h.setEnabled_(card_size_name() == "custom")
         self.strip_pct.setStringValue_(str(pref(DEF_STRIP_PCT)))
         self.strip_pct.setEnabled_(pref(DEF_LAYOUT) != "grid")
+
+    def _titleCardMenu(self):
+        titles = []
+        for label, name in (("Large", "large"), ("Medium", "medium"),
+                            ("Small", "small")):
+            w, h = card_dims(name)
+            titles.append("%s (%d \u00d7 %d)" % (label, w, h))
+        titles.append("Custom (%s \u00d7 %s)" % (
+            self.custom_w.stringValue() or "?",
+            self.custom_h.stringValue() or "?"))
+        for index, title in enumerate(titles):
+            self.card_menu.itemAtIndex_(index).setTitle_(title)
 
     def _showChord(self):
         code, mods = self._chord or (pref(DEF_HOTKEY_CODE),
@@ -5191,6 +5253,10 @@ class PrefsController(NSObject):
         anything for the layout now chosen."""
         self.strip_pct.setEnabled_(
             self.layout_menu.indexOfSelectedItem() != 2)
+        custom = self.card_menu.indexOfSelectedItem() == 3
+        self.custom_w.setEnabled_(custom)
+        self.custom_h.setEnabled_(custom)
+        self._titleCardMenu()
 
     def recordHotkey_(self, sender):
         if self._monitor is not None:
@@ -5242,17 +5308,27 @@ class PrefsController(NSObject):
             items = max(0, int(self.max_items.stringValue()))
             days = max(0, int(self.max_days.stringValue()))
             percent = max(20, min(100, int(self.strip_pct.stringValue())))
+            cw = max(CUSTOM_W_RANGE[0], min(CUSTOM_W_RANGE[1],
+                                            int(self.custom_w.stringValue())))
+            ch = max(CUSTOM_H_RANGE[0], min(CUSTOM_H_RANGE[1],
+                                            int(self.custom_h.stringValue())))
         except ValueError:
             _alert("Check the numbers",
-                   "Keep at most, Delete after and Strip size each take a "
-                   "whole number.")
+                   "Keep at most, Delete after, Strip size and the Custom "
+                   "card width and height each take a whole number.")
             return
         layout = ("strip", "column", "grid")[
             max(0, min(2, self.layout_menu.indexOfSelectedItem()))]
-        card = ("large", "medium", "small", "smallest")[
+        card = ("large", "medium", "small", "custom")[
             max(0, min(3, self.card_menu.indexOfSelectedItem()))]
-        rebuild = layout != pref(DEF_LAYOUT) or card != pref(DEF_CARD_SIZE)
-        if card != pref(DEF_CARD_SIZE):
+        was = (card_size_name(), card_dims("custom"))
+        set_pref(DEF_CUSTOM_W, cw)
+        set_pref(DEF_CUSTOM_H, ch)
+        now = (card, card_dims("custom"))
+        # Custom's measurements only matter while Custom is in use.
+        resized = card != was[0] or (card == "custom" and now[1] != was[1])
+        rebuild = layout != pref(DEF_LAYOUT) or resized
+        if resized:
             set_pref(DEF_CARD_SIZE, card)
             apply_card_size()
             # The strip's height is a function of the card height, so the

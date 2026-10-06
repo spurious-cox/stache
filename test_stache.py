@@ -975,52 +975,78 @@ def test_narrow_header():
     store.close()
 
 
-def test_smallest_card():
-    """The fourth size: smaller than Small, no source icon, header still fits."""
-    print("smallest card")
+def test_custom_card():
+    """Custom card size: your own width and height, no source icon."""
+    print("custom card")
     NSApplication.sharedApplication()
-    sizes = stache.CARD_SIZES
-    check("Smallest is smaller than Small in both directions",
-          sizes["smallest"][0] < sizes["small"][0]
-          and sizes["smallest"][1] < sizes["small"][1], str(sizes))
+    check("there is no Smallest any more", "smallest" not in stache.CARD_SIZES)
+    check("Custom starts at what Smallest was",
+          stache.card_dims("custom") == (160, 100), str(stache.card_dims("custom")))
     before = stache.pref(stache.DEF_CARD_SIZE)
     stache.set_pref(stache.DEF_CARD_SIZE, "smallest")
+    check("a saved smallest reads as custom",
+          stache.card_size_name() == "custom", stache.card_size_name())
+    stache.set_pref(stache.DEF_CARD_SIZE, "custom")
     try:
         stache.apply_card_size()
         check("the geometry follows the preference",
-              (stache.CARD_W, stache.CARD_H) == sizes["smallest"])
+              (stache.CARD_W, stache.CARD_H) == (160, 100))
         check("there is still room for a thumbnail",
               stache.THUMB_BOX_H >= 50, str(stache.THUMB_BOX_H))
-        check("no source icon at this size",
-              "smallest" in stache.NO_SOURCE_ICON
+        check("no source icon on a custom card",
+              "custom" in stache.NO_SOURCE_ICON
               and "small" not in stache.NO_SOURCE_ICON)
-        prefs = stache.PrefsController.alloc().initWithApp_(
-            type("F", (), {"store": None})())
-        prefs.refresh()
-        check("Preferences offers four sizes and shows this one",
-              prefs.card_menu.numberOfItems() == 4
-              and prefs.card_menu.indexOfSelectedItem() == 3,
-              str(prefs.card_menu.indexOfSelectedItem()))
-        store = stache.Store(os.path.join(SCRATCH, "smallest.sqlite3"))
-        store.add_text("hello", "Safari")
-        stache.set_pref(stache.DEF_LAYOUT, "column")
-        picker = stache.PickerController.alloc().initWithApp_(FakeApp(store))
-        header = picker.header
-        inside = all(v.isHidden() or
-                     (v.frame().origin.x >= -0.5 and
-                      v.frame().origin.x + v.frame().size.width
-                      <= header.frame().size.width + 0.5)
-                     for v in header.subviews())
-        check("a column of Smallest cards keeps its header inside",
-              inside, str([(v.className(), round(v.frame().origin.x),
-                            round(v.frame().size.width))
-                           for v in header.subviews()]))
-        store.close()
+        stache.set_pref(stache.DEF_CUSTOM_W, 9999)
+        stache.set_pref(stache.DEF_CUSTOM_H, 5)
+        check("a silly size is clamped",
+              stache.card_dims("custom") == (stache.CUSTOM_W_RANGE[1],
+                                             stache.CUSTOM_H_RANGE[0]),
+              str(stache.card_dims("custom")))
+        stache.set_pref(stache.DEF_CUSTOM_W, 160)
+        stache.set_pref(stache.DEF_CUSTOM_H, 100)
+
+        class App(FakeApp):
+            rebuilt = 0
+
+            def rebuildPicker(self):
+                App.rebuilt += 1
+
+        class Picker(object):
+            def releaseHold(self):
+                pass
+
+        app = App(None)
+        app.picker = Picker()
+        prefs = stache.PrefsController.alloc().initWithApp_(app)
+        prefs.show()
+        titles = [prefs.card_menu.itemAtIndex_(i).title() for i in range(4)]
+        check("every size shows its dimensions",
+              all("\u00d7" in x for x in titles), str(titles))
+        check("and Custom shows the typed ones",
+              titles[3] == "Custom (160 \u00d7 100)", titles[3])
+        check("the fields are live while Custom is chosen",
+              prefs.custom_w.isEnabled() and prefs.custom_h.isEnabled())
+        prefs.card_menu.selectItemAtIndex_(0)
+        prefs.stage_(prefs.card_menu)
+        check("and dead otherwise", not prefs.custom_w.isEnabled())
+        prefs.card_menu.selectItemAtIndex_(3)
+        prefs.custom_w.setStringValue_("200")
+        prefs.custom_h.setStringValue_("120")
+        prefs.stage_(prefs.card_menu)
+        check("the Custom entry follows the fields",
+              prefs.card_menu.itemAtIndex_(3).title() == "Custom (200 \u00d7 120)",
+              prefs.card_menu.itemAtIndex_(3).title())
+        prefs.save_(None)
+        check("Save applies the new size",
+              stache.card_dims("custom") == (200, 120)
+              and (stache.CARD_W, stache.CARD_H) == (200, 120),
+              str((stache.CARD_W, stache.CARD_H)))
+        check("and rebuilds the picker", App.rebuilt == 1, str(App.rebuilt))
     finally:
-        stache.defaults().removeObjectForKey_(stache.DEF_LAYOUT)
-        if before == stache.DEFAULTS[stache.DEF_CARD_SIZE]:
-            stache.defaults().removeObjectForKey_(stache.DEF_CARD_SIZE)
-        else:
+        for key in (stache.DEF_CUSTOM_W, stache.DEF_CUSTOM_H,
+                    stache.DEF_CARD_SIZE):
+            stache.defaults().removeObjectForKey_(key)
+        if before != stache.DEFAULTS[stache.DEF_CARD_SIZE]:
             stache.set_pref(stache.DEF_CARD_SIZE, before)
         stache.apply_card_size()
 
@@ -1529,7 +1555,7 @@ if __name__ == "__main__":
         test_reading_order()
         test_add_to_filter()
         test_narrow_header()
-        test_smallest_card()
+        test_custom_card()
         test_render()
     finally:
         shutil.rmtree(SCRATCH, ignore_errors=True)
