@@ -975,6 +975,56 @@ def test_narrow_header():
     store.close()
 
 
+def test_smallest_card():
+    """The fourth size: smaller than Small, no source icon, header still fits."""
+    print("smallest card")
+    NSApplication.sharedApplication()
+    sizes = stache.CARD_SIZES
+    check("Smallest is smaller than Small in both directions",
+          sizes["smallest"][0] < sizes["small"][0]
+          and sizes["smallest"][1] < sizes["small"][1], str(sizes))
+    before = stache.pref(stache.DEF_CARD_SIZE)
+    stache.set_pref(stache.DEF_CARD_SIZE, "smallest")
+    try:
+        stache.apply_card_size()
+        check("the geometry follows the preference",
+              (stache.CARD_W, stache.CARD_H) == sizes["smallest"])
+        check("there is still room for a thumbnail",
+              stache.THUMB_BOX_H >= 50, str(stache.THUMB_BOX_H))
+        check("no source icon at this size",
+              "smallest" in stache.NO_SOURCE_ICON
+              and "small" not in stache.NO_SOURCE_ICON)
+        prefs = stache.PrefsController.alloc().initWithApp_(
+            type("F", (), {"store": None})())
+        prefs.refresh()
+        check("Preferences offers four sizes and shows this one",
+              prefs.card_menu.numberOfItems() == 4
+              and prefs.card_menu.indexOfSelectedItem() == 3,
+              str(prefs.card_menu.indexOfSelectedItem()))
+        store = stache.Store(os.path.join(SCRATCH, "smallest.sqlite3"))
+        store.add_text("hello", "Safari")
+        stache.set_pref(stache.DEF_LAYOUT, "column")
+        picker = stache.PickerController.alloc().initWithApp_(FakeApp(store))
+        header = picker.header
+        inside = all(v.isHidden() or
+                     (v.frame().origin.x >= -0.5 and
+                      v.frame().origin.x + v.frame().size.width
+                      <= header.frame().size.width + 0.5)
+                     for v in header.subviews())
+        check("a column of Smallest cards keeps its header inside",
+              inside, str([(v.className(), round(v.frame().origin.x),
+                            round(v.frame().size.width))
+                           for v in header.subviews()]))
+        store.close()
+    finally:
+        stache.defaults().removeObjectForKey_(stache.DEF_LAYOUT)
+        if before == stache.DEFAULTS[stache.DEF_CARD_SIZE]:
+            stache.defaults().removeObjectForKey_(stache.DEF_CARD_SIZE)
+        else:
+            stache.set_pref(stache.DEF_CARD_SIZE, before)
+        stache.apply_card_size()
+
+
 def test_render():
     print("render")
     NSApplication.sharedApplication()
@@ -1479,6 +1529,7 @@ if __name__ == "__main__":
         test_reading_order()
         test_add_to_filter()
         test_narrow_header()
+        test_smallest_card()
         test_render()
     finally:
         shutil.rmtree(SCRATCH, ignore_errors=True)

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Stache - clipboard history for macOS
-Version: 2.17.1
+Version: 2.18.1
 
 A background (LSUIElement) agent that watches the general pasteboard and
 records everything copied to it - plain text and images alike - with the date
@@ -34,6 +34,12 @@ typing Cmd-V for you - synthesising a keystroke is the one thing here that
 would have demanded Accessibility.
 
 History:
+  2.18.1 Smallest is 100pt tall, down from 132: about four lines of text or a
+         55pt thumbnail between the date and the source line.
+  2.18.0 A fourth card size, Smallest, for a narrow strip or column.  It leaves
+         out the source application's icon: the line under each card already
+         names the app ("Safari · 259 chars"), so the icon only took room from
+         the text.  The other three sizes keep their icons.
   2.17.1 In a very narrow strip the filter popup took the whole row and the
          search field was left as a magnifier and one letter underneath it.
          The popup now never overlaps the search field: below the room a
@@ -485,7 +491,7 @@ History:
   1.0.0  First release.
 """
 
-APP_VERSION = "2.17.1"
+APP_VERSION = "2.18.1"
 COPYRIGHT = "© 2026 Tim McCoy"
 APP_NAME = "Stache"
 BUNDLE_ID = "com.timmccoy.stache"
@@ -639,7 +645,7 @@ DEF_LAYOUT = "StacheLayout"               # "strip", "column" or "grid"
 DEF_COLUMN_FRAME = "StacheColumnFrame"    # column layout's saved frame
 DEF_HELP_SCALE = "StacheHelpTextScale"    # help window text size, x1.0
 DEF_STRIP_PCT = "StacheStripWidthPercent"  # strip width, % of the screen
-DEF_CARD_SIZE = "StacheCardSize"          # "small", "medium" or "large"
+DEF_CARD_SIZE = "StacheCardSize"          # "smallest", "small", "medium" or "large"
 DEF_FILTERS = "StacheFilters"             # saved searches, as a JSON list
 DEF_OLDEST_FIRST = "StacheOldestFirst"    # reading order, by capture time
 
@@ -1905,11 +1911,13 @@ def carbon_mods(ns_flags):
 # only the cards the scroller has exposed keeps that flat.
 
 CARD_SIZES = {                       # name -> (width, height)
+    "smallest": (160, 100),
     "small": (190, 158),
     "medium": (230, 188),
     "large": (272, 220),
 }
 CARD_W, CARD_H = CARD_SIZES["large"]
+NO_SOURCE_ICON = ("smallest",)      # sizes whose caption says it in words
 GAP, MARGIN = 12, 12
 # The card is a picture with a caption above and below it, rather than a
 # picture sharing the card with a footer: the date goes on top, the source
@@ -2279,7 +2287,8 @@ class GridView(NSView):
         # The source application's icon sits at the bottom right of the
         # card, on the same line as where it came from.  The text gives up
         # the room first so it can never run underneath.
-        icon = app_icon(item.app)
+        icon = (None if str(pref(DEF_CARD_SIZE)) in NO_SOURCE_ICON
+                else app_icon(item.app))
         if icon is not None:
             spot = NSMakeRect(rect.origin.x + CARD_W - CARD_PAD - SOURCE_ICON,
                               rect.origin.y + CARD_H - CARD_PAD - META_H + 1,
@@ -5035,7 +5044,7 @@ class PrefsController(NSObject):
         view.addSubview_(_right_label("Card size:", row(0) + 5))
         self.card_menu = NSPopUpButton.alloc().initWithFrame_pullsDown_(
             NSMakeRect(FIELD_X, row(0), 160, 26), False)
-        self.card_menu.addItemsWithTitles_(["Large", "Medium", "Small"])
+        self.card_menu.addItemsWithTitles_(["Large", "Medium", "Small", "Smallest"])
         self.card_menu.setTarget_(self)
         self.card_menu.setAction_("stage:")
         view.addSubview_(self.card_menu)
@@ -5164,7 +5173,7 @@ class PrefsController(NSObject):
         self.layout_menu.selectItemAtIndex_(
             {"strip": 0, "column": 1, "grid": 2}.get(pref(DEF_LAYOUT), 0))
         self.card_menu.selectItemAtIndex_(
-            {"large": 0, "medium": 1, "small": 2}.get(
+            {"large": 0, "medium": 1, "small": 2, "smallest": 3}.get(
                 str(pref(DEF_CARD_SIZE)), 0))
         self.strip_pct.setStringValue_(str(pref(DEF_STRIP_PCT)))
         self.strip_pct.setEnabled_(pref(DEF_LAYOUT) != "grid")
@@ -5240,8 +5249,8 @@ class PrefsController(NSObject):
             return
         layout = ("strip", "column", "grid")[
             max(0, min(2, self.layout_menu.indexOfSelectedItem()))]
-        card = ("large", "medium", "small")[
-            max(0, min(2, self.card_menu.indexOfSelectedItem()))]
+        card = ("large", "medium", "small", "smallest")[
+            max(0, min(3, self.card_menu.indexOfSelectedItem()))]
         rebuild = layout != pref(DEF_LAYOUT) or card != pref(DEF_CARD_SIZE)
         if card != pref(DEF_CARD_SIZE):
             set_pref(DEF_CARD_SIZE, card)

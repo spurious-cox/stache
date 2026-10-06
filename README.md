@@ -191,7 +191,9 @@ Unlock falls back to your login password, so a Mac without Touch ID works too.
 
 From the menu bar item, or ⌘, while Stache is frontmost.
 
-* **Card size** — Large, Medium or Small. Thumbnails are rebuilt as needed.
+* **Card size** — Large, Medium, Small or Smallest. Smallest also drops the
+  source application's icon, since the line under each card already names the
+  app. Thumbnails are rebuilt as needed.
 * **Layout** — Strip, Column or Grid.
 * **Strip size** — a percentage of the screen: a strip's width, a column's
   height.
