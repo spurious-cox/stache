@@ -66,8 +66,8 @@ The name is the joke: a *stache* is where you *stash* things.
 No Dock icon and no window of its own — Stache lives in the menu bar. That
 menu holds **no clippings**: it opens with one click and no authentication,
 which is the wrong place for the history when hidden clippings exist. It is
-About, Preferences, Help, Check for Updates, Open, Pause Capturing, Clear
-History and Quit.
+About, Preferences, Help, Check for Updates, Open, Pause Capturing and Quit,
+with an "Update available" line on top when there is a newer release.
 
 Three layouts, set in Preferences, each remembering its own size and place:
 
@@ -260,6 +260,17 @@ than making a second one.
 None. The hotkey is a Carbon hot key, and writing to the pasteboard is
 unprivileged. That is why picking a clipping copies rather than pressing ⌘V
 for you — synthesising a keystroke would have required Accessibility.
+
+## Updates
+
+When Stache starts it asks GitHub whether a newer release exists — at most
+once a day, giving up after three seconds — and says nothing if you are up to
+date or offline. If there is a newer one, the top of the menu bar menu says:
+
+    Update available: X.Y.Z  —  brew upgrade --cask stache
+
+and choosing it opens the release page. **Check for Updates…** asks on demand.
+It only ever reports: nothing is downloaded and nothing replaces itself.
 
 ## Building
 

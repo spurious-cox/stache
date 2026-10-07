@@ -58,6 +58,9 @@ echo "==> building the icon"
 
 echo "==> building"
 rm -rf build dist
+# The Help Flache opens from this app's icon: Stache-README.txt in Resources,
+# made from README.md so there is one source.
+/usr/bin/python3 "$HOME/My_Applications/_signing/pixpro_readme_txt.py" README.md Stache-README.txt
 ./venv/bin/python setup.py py2app >/dev/null
 
 # macOS 26+ draws an app that has only an .icns shrunk onto a plain plate.

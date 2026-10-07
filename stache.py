@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Stache - clipboard history for macOS
-Version: 2.19.0
+Version: 2.20.0
 
 A background (LSUIElement) agent that watches the general pasteboard and
 records everything copied to it - plain text and images alike - with the date
@@ -34,6 +34,14 @@ typing Cmd-V for you - synthesising a keystroke is the one thing here that
 would have demanded Accessibility.
 
 History:
+  2.20.0 Stache checks for a newer release once, quietly, when it starts - at
+         most once a day, giving up after three seconds, saying nothing when
+         it is current or the network is away.  When there is one, the top of
+         the menu bar menu says "Update available: X.Y.Z  -  brew upgrade
+         --cask stache" and choosing it opens the release page.  This is the
+         same check every PixPro app makes; Check for Updates... stays for
+         asking on demand.  The app also carries its Read Me inside the
+         bundle as Stache-README.txt, which is what Flache opens as its Help.
   2.19.0 Smallest is replaced by Custom: you choose the card's width and
          height.  Every entry in the Card size menu now shows its dimensions
          ("Large (272 x 220)"), and Custom starts at 160 x 100, which is what
@@ -497,7 +505,7 @@ History:
   1.0.0  First release.
 """
 
-APP_VERSION = "2.19.0"
+APP_VERSION = "2.20.0"
 COPYRIGHT = "© 2026 Tim McCoy"
 APP_NAME = "Stache"
 BUNDLE_ID = "com.timmccoy.stache"
@@ -656,6 +664,8 @@ DEF_CUSTOM_W = "StacheCustomCardW"        # Custom card size, in points
 DEF_CUSTOM_H = "StacheCustomCardH"
 DEF_FILTERS = "StacheFilters"             # saved searches, as a JSON list
 DEF_OLDEST_FIRST = "StacheOldestFirst"    # reading order, by capture time
+DEF_UPDATE_DAY = "StacheUpdateCheckedOn"  # the day the quiet check last asked
+DEF_UPDATE_TAG = "StacheUpdateLatestTag"  # what it found
 
 # Control-Option-Command-Space.  49 is the Space key.
 DEFAULT_HOTKEY_CODE = 49
@@ -5564,7 +5574,7 @@ RELEASES_PAGE = "https://github.com/spurious-cox/stache/releases/latest"
 CASK = "spurious-cox/tap/stache"
 
 
-def latest_release():
+def latest_release(seconds=10):
     """(version, page url) of the newest published release, or None when
     GitHub cannot be reached or answers with something unexpected.
 
@@ -5573,9 +5583,9 @@ def latest_release():
     """
     try:
         out = subprocess.run(
-            ["/usr/bin/curl", "-sfL", "--max-time", "10",
+            ["/usr/bin/curl", "-sfL", "--max-time", str(seconds),
              "-H", "Accept: application/vnd.github+json", RELEASES_API],
-            capture_output=True, timeout=15, check=True).stdout
+            capture_output=True, timeout=seconds + 5, check=True).stdout
         data = json.loads(out)
         return [str(data["tag_name"]).lstrip("v"),
                 str(data.get("html_url") or RELEASES_PAGE)]
@@ -5586,6 +5596,29 @@ def latest_release():
 
 def version_tuple(text):
     return tuple(int(part) for part in re.findall(r"\d+", str(text)))
+
+
+def quiet_update_line():
+    """"Update available: X.Y.Z - brew upgrade --cask stache", or "".
+
+    The check every PixPro app makes when it opens: asked at most once a day
+    (the answer is kept in preferences), three seconds at the longest, and
+    silent when this build is current or GitHub cannot be reached.
+    """
+    today = time.strftime("%Y-%m-%d")
+    store = defaults()
+    if str(store.stringForKey_(DEF_UPDATE_DAY) or "") == today:
+        tag = str(store.stringForKey_(DEF_UPDATE_TAG) or "")
+    else:
+        found = latest_release(3)
+        if not found:
+            return ""
+        tag = found[0]
+        store.setObject_forKey_(tag, DEF_UPDATE_TAG)
+        store.setObject_forKey_(today, DEF_UPDATE_DAY)
+    if not tag or version_tuple(tag) <= version_tuple(APP_VERSION):
+        return ""
+    return "Update available: %s  \u2014  brew upgrade --cask stache" % tag
 
 
 def update_alert(found):
@@ -5682,6 +5715,7 @@ class StacheApp(NSObject):
         self.help = HelpController.alloc().initWithApp_(self)
 
         self._buildStatusItem()
+        self.checkQuietly()
 
         self.hotkey = HotKey(self.hotkeyPressed)
         if not self.applyHotkey():
@@ -5833,6 +5867,15 @@ class StacheApp(NSObject):
         updates = menu.addItemWithTitle_action_keyEquivalent_(
             "Check for Updates…", "menuCheckUpdates:", "")
         updates.setTarget_(self)
+        # Hidden until the quiet check at launch finds something newer; then
+        # it is the first line of the menu.
+        self.update_item = menu.insertItemWithTitle_action_keyEquivalent_atIndex_(
+            "", "menuOpenRelease:", "", 0)
+        self.update_item.setTarget_(self)
+        self.update_item.setHidden_(True)
+        self.update_rule = NSMenuItem.separatorItem()
+        self.update_rule.setHidden_(True)
+        menu.insertItem_atIndex_(self.update_rule, 1)
         menu.addItem_(NSMenuItem.separatorItem())
         self.open_item = menu.addItemWithTitle_action_keyEquivalent_(
             "Open Stache", "menuOpen:", "")
@@ -6040,6 +6083,24 @@ class StacheApp(NSObject):
             "© 2026 Tim McCoy."
             % (self.store.count(), "" if self.store.count() == 1 else "s",
                _human_bytes(self.store.disk_bytes()), SUPPORT_DIR))
+
+    def checkQuietly(self):
+        """Once, in the background, when the app starts. See quiet_update_line."""
+        def work():
+            line = quiet_update_line()
+            if line:
+                self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                    "showUpdateLine:", line, False)
+        threading.Thread(target=work, daemon=True).start()
+
+    def showUpdateLine_(self, line):
+        self.update_item.setTitle_(line)
+        self.update_item.setHidden_(False)
+        self.update_rule.setHidden_(False)
+
+    def menuOpenRelease_(self, sender):
+        NSWorkspace.sharedWorkspace().openURL_(
+            NSURL.URLWithString_(RELEASES_PAGE))
 
     def menuCheckUpdates_(self, sender):
         # The request can take seconds on a slow network; the menu bar and

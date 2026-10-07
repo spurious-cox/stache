@@ -1051,6 +1051,39 @@ def test_custom_card():
         stache.apply_card_size()
 
 
+def test_quiet_update():
+    """The check at launch: once a day, silent unless newer."""
+    print("quiet update check")
+    calls = []
+    saved = stache.latest_release, stache.APP_VERSION
+    day, tag = stache.DEF_UPDATE_DAY, stache.DEF_UPDATE_TAG
+    for key in (day, tag):
+        stache.defaults().removeObjectForKey_(key)
+    try:
+        stache.latest_release = lambda seconds=10: (
+            calls.append(seconds) or ["9.9.9", "page"])
+        stache.APP_VERSION = "1.0.0"
+        line = stache.quiet_update_line()
+        check("a newer release is reported with the brew line",
+              line.startswith("Update available: 9.9.9")
+              and "brew upgrade --cask stache" in line, line)
+        check("it gives up after three seconds", calls == [3], str(calls))
+        stache.quiet_update_line()
+        check("and asks only once a day", len(calls) == 1, str(calls))
+        stache.APP_VERSION = "9.9.9"
+        check("silent when this build is current",
+              stache.quiet_update_line() == "")
+        for key in (day, tag):
+            stache.defaults().removeObjectForKey_(key)
+        stache.latest_release = lambda seconds=10: None
+        check("silent when GitHub cannot be reached",
+              stache.quiet_update_line() == "")
+    finally:
+        stache.latest_release, stache.APP_VERSION = saved
+        for key in (day, tag):
+            stache.defaults().removeObjectForKey_(key)
+
+
 def test_render():
     print("render")
     NSApplication.sharedApplication()
@@ -1556,6 +1589,7 @@ if __name__ == "__main__":
         test_add_to_filter()
         test_narrow_header()
         test_custom_card()
+        test_quiet_update()
         test_render()
     finally:
         shutil.rmtree(SCRATCH, ignore_errors=True)

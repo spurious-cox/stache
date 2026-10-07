@@ -16,7 +16,9 @@ from setuptools import setup
 APP = ["stache.py"]
 # The menu bar mark ships as a PNG so the app does not depend on the
 # "Old English Five" font being installed on the machine running it.
-DATA_FILES = [("", ["icon/Stache_glyph.png"])]
+# Stache-README.txt is made from README.md by build.sh; it is the Help that
+# Flache opens from this app's icon.
+DATA_FILES = [("", ["icon/Stache_glyph.png", "Stache-README.txt"])]
 
 
 def app_version():

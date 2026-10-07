@@ -22,3 +22,6 @@ icon/Stache_glyph.png
 
 # working backups taken before a substantial edit
 *.bak
+
+# generated from README.md by build.sh
+*-README.txt
