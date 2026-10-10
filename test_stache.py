@@ -1188,7 +1188,7 @@ def test_render():
               for i in range(menu.numberOfItems())]
     opener = stache._default_app_name(image_item.blob_path)
     check("the open item names the application that will really open it",
-          bool(opener) and ("Open in %s" % opener) in titles,
+          bool(opener) and any(t.startswith("Open in %s" % opener) for t in titles),
           "opener=%s titles=%s" % (opener, titles))
     check("Preview keeps its own item when it is not the default",
           opener == "Preview" or "Open in Preview" in titles, str(titles))
@@ -1200,7 +1200,7 @@ def test_render():
     check("Open With lists real applications", len(apps) > 1, str(apps))
     check("Open With ends with Other…", apps[-1] == "Other…", str(apps))
     check("the default application is among them",
-          opener in apps, "%s not in %s" % (opener, apps))
+          any(a.startswith(opener) for a in apps), "%s not in %s" % (opener, apps))
 
     text_item = [i for i in picker.grid.items() if i.kind == "text"][0]
     text_path = stache.openable_path(text_item)

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Stache - clipboard history for macOS
-Version: 2.20.0
+Version: 2.21.0
 
 A background (LSUIElement) agent that watches the general pasteboard and
 records everything copied to it - plain text and images alike - with the date
@@ -34,6 +34,11 @@ typing Cmd-V for you - synthesising a keystroke is the one thing here that
 would have demanded Accessibility.
 
 History:
+  2.21.0 When both Pixelmator Pro builds are installed (3.x and Creator Studio
+         4.x) the image context menu offers an Open in item for each, instead
+         of only the one macOS prefers.  Open With listed both already; this
+         puts the choice one click away.  Creator Studio comes first in both the
+         menu and Open With, and each build's name carries its version.
   2.20.0 Stache checks for a newer release once, quietly, when it starts - at
          most once a day, giving up after three seconds, saying nothing when
          it is current or the network is away.  When there is one, the top of
@@ -505,7 +510,7 @@ History:
   1.0.0  First release.
 """
 
-APP_VERSION = "2.20.0"
+APP_VERSION = "2.21.0"
 COPYRIGHT = "© 2026 Tim McCoy"
 APP_NAME = "Stache"
 BUNDLE_ID = "com.timmccoy.stache"
@@ -4133,17 +4138,33 @@ class PickerController(NSObject):
         # something else, which on this Mac is Pixelmator Pro.
         opener = (_default_browser_name(link) if link
                   else _default_app_name(path))
-        add("Open in %s" % opener if opener else "Open", "menuOpen:",
-            link is not None or path is not None)
+        candidates = apps_for_url(link) if link else apps_for(path)
+        self._menu_apps = {}
+        # With both Pixelmator Pro builds installed, each gets its own Open in
+        # item, Creator Studio first, instead of only the one macOS prefers.
+        # They also lead the Open With list.
+        builds = pixelmator_builds(candidates) if item.kind == "image" else []
+        if len(builds) > 1:
+            taken = [url for _, url in builds]
+            candidates = builds + [c for c in candidates
+                                   if c[1] not in taken]
+            for name, url in builds:
+                tag = 1000 + len(self._menu_apps)
+                self._menu_apps[tag] = url
+                entry = menu.addItemWithTitle_action_keyEquivalent_(
+                    "Open in %s" % name, "menuOpenWith:", "")
+                entry.setTarget_(self)
+                entry.setTag_(tag)
+        else:
+            add("Open in %s" % opener if opener else "Open", "menuOpen:",
+                link is not None or path is not None)
         if item.kind == "image" and opener != "Preview" \
                 and _preview_app() is not None:
             add("Open in Preview", "menuPreview:", path is not None)
 
-        candidates = apps_for_url(link) if link else apps_for(path)
         with_item = menu.addItemWithTitle_action_keyEquivalent_(
             "Open With", None, "")
         submenu = NSMenu.alloc().initWithTitle_("Open With")
-        self._menu_apps = {}
         for index, (name, url) in enumerate(candidates):
             entry = submenu.addItemWithTitle_action_keyEquivalent_(
                 name, "menuOpenWith:", "")
@@ -4515,6 +4536,24 @@ def apps_for(path):
         if name not in seen:
             seen.add(name)
             out.append((name, url))
+    return out
+
+
+PIXELMATOR_IDS = ("com.apple.pixelmator", "com.pixelmatorteam.pixelmator.x")
+
+
+def pixelmator_builds(candidates):
+    """The installed Pixelmator Pro builds among `candidates` (name, url),
+    each name carrying the build's version, Creator Studio first."""
+    out = []
+    for name, url in candidates:
+        bundle = NSBundle.bundleWithURL_(url)
+        if bundle is not None and bundle.bundleIdentifier() in PIXELMATOR_IDS:
+            version = bundle.objectForInfoDictionaryKey_(
+                "CFBundleShortVersionString")
+            out.append(("%s %s" % (name, version) if version else name, url))
+    out.sort(key=lambda c: NSBundle.bundleWithURL_(c[1]).bundleIdentifier()
+             != PIXELMATOR_IDS[0])
     return out
 
 
