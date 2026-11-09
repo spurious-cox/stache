@@ -510,7 +510,7 @@ History:
   1.0.0  First release.
 """
 
-APP_VERSION = "2.21.0"
+APP_VERSION = "2.28.1"
 COPYRIGHT = "© 2026 Tim McCoy"
 APP_NAME = "Stache"
 BUNDLE_ID = "com.timmccoy.stache"
@@ -548,6 +548,7 @@ from AppKit import (
     NSBitmapImageFileTypePNG,
     NSButton,
     NSColor,
+    NSSlider,
     NSCompositingOperationSourceOver,
     NSDeviceRGBColorSpace,
     NSEvent,
@@ -560,6 +561,7 @@ from AppKit import (
     NSFontAttributeName,
     NSForegroundColorAttributeName,
     NSGraphicsContext,
+    NSShadow,
     NSImage,
     NSImageScaleProportionallyUpOrDown,
     NSImageView,
@@ -616,6 +618,7 @@ from Quartz import (
     kCGWindowListOptionOnScreenOnly,
 )
 from Foundation import (
+    NSAppleScript,
     NSAttributedString,
     NSBundle,
     NSRectFromString,
@@ -655,6 +658,8 @@ POLL_SECONDS = 0.35
 # NSUserDefaults keys.
 DEF_HOTKEY_CODE = "StacheHotKeyCode"
 DEF_HOTKEY_MODS = "StacheHotKeyMods"      # Carbon modifier mask
+DEF_LOC_CODE = "StacheLocationKeyCode"   # Save Finder location chord
+DEF_LOC_MODS = "StacheLocationKeyMods"
 DEF_MAX_ITEMS = "StacheMaxItems"
 DEF_MAX_DAYS = "StacheMaxDays"
 DEF_CAPTURE_IMAGES = "StacheCaptureImages"
@@ -664,9 +669,13 @@ DEF_LAYOUT = "StacheLayout"               # "strip", "column" or "grid"
 DEF_COLUMN_FRAME = "StacheColumnFrame"    # column layout's saved frame
 DEF_HELP_SCALE = "StacheHelpTextScale"    # help window text size, x1.0
 DEF_STRIP_PCT = "StacheStripWidthPercent"  # strip width, % of the screen
+DEF_STRIP_H = "StacheStripHeight"         # strip window height, points; 0 = from card size
+DEF_COLUMN_W = "StacheColumnWidth"        # column window width, points; 0 = from card size
 DEF_CARD_SIZE = "StacheCardSize"          # "large", "medium", "small" or "custom"
 DEF_CUSTOM_W = "StacheCustomCardW"        # Custom card size, in points
 DEF_CUSTOM_H = "StacheCustomCardH"
+DEF_BG = "StacheBackground"            # picker background: "" = system, "none", or a name in BG_COLORS
+DEF_BG_SHADE = "StacheBackgroundShade"   # -100 darker .. 0 as chosen .. +100 lighter
 DEF_FILTERS = "StacheFilters"             # saved searches, as a JSON list
 DEF_OLDEST_FIRST = "StacheOldestFirst"    # reading order, by capture time
 DEF_UPDATE_DAY = "StacheUpdateCheckedOn"  # the day the quiet check last asked
@@ -676,20 +685,30 @@ DEF_UPDATE_TAG = "StacheUpdateLatestTag"  # what it found
 DEFAULT_HOTKEY_CODE = 49
 DEFAULT_HOTKEY_MODS = 0x1000 | 0x0800 | 0x0100      # control | option | command
 
+# Control-Option-Command-L, for "location".
+DEFAULT_LOC_CODE = 37
+DEFAULT_LOC_MODS = DEFAULT_HOTKEY_MODS
+
 DEFAULTS = {
     DEF_HOTKEY_CODE: DEFAULT_HOTKEY_CODE,
     DEF_HOTKEY_MODS: DEFAULT_HOTKEY_MODS,
+    DEF_LOC_CODE: DEFAULT_LOC_CODE,
+    DEF_LOC_MODS: DEFAULT_LOC_MODS,
     DEF_FILTERS: "[]",
     DEF_MAX_ITEMS: 500,
     DEF_MAX_DAYS: 30,
     DEF_CAPTURE_IMAGES: True,
     DEF_LAYOUT: "strip",
     DEF_STRIP_PCT: 60,
+    DEF_STRIP_H: 0,
+    DEF_COLUMN_W: 0,
     DEF_HELP_SCALE: 100,   # per cent, because prefs store ints cleanly
     DEF_CARD_SIZE: "large",
     DEF_CUSTOM_W: 160,
     DEF_CUSTOM_H: 100,
     DEF_OLDEST_FIRST: False,
+    DEF_BG: "",
+    DEF_BG_SHADE: 0,
 }
 
 # Pasteboard flags that mean "do not record this".  ConcealedType is what
@@ -728,6 +747,59 @@ def pref(key):
 
 def set_pref(key, value):
     defaults().setObject_forKey_(value, key)
+
+
+BG_COLORS = (
+    ("black", "Black", (0.0, 0.0, 0.0)),
+    ("white", "White", (1.0, 1.0, 1.0)),
+    ("gray", "Gray", (0.5, 0.5, 0.5)),
+    ("red", "Red", (0.85, 0.2, 0.2)),
+    ("orange", "Orange", (0.95, 0.6, 0.15)),
+    ("yellow", "Yellow", (0.98, 0.9, 0.3)),
+    ("green", "Green", (0.25, 0.7, 0.3)),
+    ("blue", "Blue", (0.2, 0.4, 0.85)),
+)
+
+
+def bg_is_clear():
+    return str(pref(DEF_BG)) == "none"
+
+
+def bg_base_rgb(name):
+    """The (r, g, b) a background choice stands for, or None: a basic colour
+    by name, or "rgb:r,g,b" for a colour that has been shaded and kept."""
+    if name.startswith("rgb:"):
+        try:
+            r, g, b = [float(x) for x in name[4:].split(",")]
+            return (r, g, b)
+        except ValueError:
+            return None
+    for key, _label, rgb in BG_COLORS:
+        if key == name:
+            return rgb
+    return None
+
+
+def shade_rgb(rgb, shade):
+    """Toward black for a negative shade, toward white for a positive one."""
+    t = max(-100, min(100, int(shade))) / 100.0
+    r, g, b = rgb
+    if t < 0:
+        return (r * (1 + t), g * (1 + t), b * (1 + t))
+    return (r + (1 - r) * t, g + (1 - g) * t, b + (1 - b) * t)
+
+
+def bg_color():
+    """The picker's background: the chosen colour with its shade, clear for
+    "none", else the system's."""
+    name = str(pref(DEF_BG))
+    if name == "none":
+        return NSColor.clearColor()
+    rgb = bg_base_rgb(name)
+    if rgb is None:
+        return NSColor.windowBackgroundColor()
+    r, g, b = shade_rgb(rgb, pref(DEF_BG_SHADE))
+    return NSColor.colorWithSRGBRed_green_blue_alpha_(r, g, b, 1.0)
 
 
 # ---------------------------------------------------------------------------
@@ -1136,6 +1208,15 @@ class Store(object):
             # order by when it happened. Left NULL for everything already
             # captured, which falls back to `used` and then `created`.
             self.db.execute("ALTER TABLE items ADD COLUMN changed REAL")
+        if "slot" not in columns:
+            # 2.27.0: a clipping dragged to a new place. The lists sort on
+            # slot first when there is one; recalling, pinning, hiding or
+            # editing a clipping clears it, so those still bring it forward.
+            self.db.execute("ALTER TABLE items ADD COLUMN slot REAL")
+        self.db.execute(
+            "CREATE TRIGGER IF NOT EXISTS items_slot_reset "
+            "AFTER UPDATE OF used, changed ON items "
+            "BEGIN UPDATE items SET slot = NULL WHERE id = NEW.id; END")
         if "hidden" not in columns:
             # 2.0.0: the hidden filter. Default 0, so every clipping already
             # captured stays exactly as visible as it was.
@@ -1274,12 +1355,44 @@ class Store(object):
         # hidden clipping still reaches the front of its own filter, because
         # pinning and hiding set `changed` and that is what is sorted on.
         if oldest_first:
-            sql += " ORDER BY created DESC, id DESC LIMIT ?"
+            sql += " ORDER BY COALESCE(slot, created) DESC, id DESC LIMIT ?"
         else:
-            sql += " ORDER BY COALESCE(changed, used, created) DESC LIMIT ?"
+            sql += " ORDER BY COALESCE(slot, changed, used, created) DESC LIMIT ?"
         args.append(limit)
         found = [Item(r) for r in self.db.execute(sql, args)]
         return found[::-1] if oldest_first else found
+
+    def move_item(self, item_id, prev_id, next_id, ascending):
+        """Put a clipping between two others, as the list shows them.
+
+        prev_id is the clipping drawn before it and next_id the one after
+        (either may be None at an end); ascending is True in reading order,
+        where earlier means a smaller sort key.  The new key sits halfway
+        between the neighbours' keys, so nothing else is rewritten.
+        """
+        expr = ("COALESCE(slot, created)" if ascending
+                else "COALESCE(slot, changed, used, created)")
+
+        def key(other):
+            if other is None:
+                return None
+            row = self.db.execute(
+                "SELECT %s FROM items WHERE id = ?" % expr,
+                (other,)).fetchone()
+            return row[0] if row else None
+
+        kp, kn = key(prev_id), key(next_id)
+        if kp is not None and kn is not None:
+            new = (kp + kn) / 2.0
+        elif kp is not None:
+            new = kp + (1.0 if ascending else -1.0)
+        elif kn is not None:
+            new = kn + (-1.0 if ascending else 1.0)
+        else:
+            return
+        self.db.execute("UPDATE items SET slot = ? WHERE id = ?",
+                        (new, item_id))
+        self.db.commit()
 
     def get(self, item_id):
         row = self.db.execute(
@@ -1841,6 +1954,12 @@ _carbon.InstallEventHandler.argtypes = [
     ctypes.POINTER(_EventTypeSpec), ctypes.c_void_p,
     ctypes.POINTER(ctypes.c_void_p)]
 _carbon.InstallEventHandler.restype = ctypes.c_int32
+_carbon.GetEventParameter.argtypes = [
+    ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32,
+    ctypes.c_void_p, ctypes.c_ulong, ctypes.c_void_p, ctypes.c_void_p]
+_carbon.GetEventParameter.restype = ctypes.c_int32
+kEventParamDirectObject = 0x2D2D2D2D      # '----'
+typeEventHotKeyID = 0x686B6964            # 'hkid'
 
 
 class HotKey(object):
@@ -1848,8 +1967,9 @@ class HotKey(object):
     if Python collects it the window server calls a freed trampoline and the
     app dies the first time the hotkey is pressed."""
 
-    def __init__(self, callback):
+    def __init__(self, callback, hk_number=1):
         self._callback = callback
+        self._number = hk_number
         self._ref = ctypes.c_void_p()
         self._registered = False
         self._trampoline = _HANDLER(self._fire)
@@ -1860,6 +1980,15 @@ class HotKey(object):
             ctypes.byref(spec), None, ctypes.byref(handler_ref))
 
     def _fire(self, next_handler, event, user_data):
+        # Every HotKey hears every hot key event; only the one whose id
+        # arrived answers, and the rest report eventNotHandledErr so the
+        # next handler in the chain gets its turn.
+        got = _EventHotKeyID()
+        status = _carbon.GetEventParameter(
+            event, kEventParamDirectObject, typeEventHotKeyID, None,
+            ctypes.sizeof(got), None, ctypes.byref(got))
+        if status != 0 or got.id != self._number:
+            return -9874                              # eventNotHandledErr
         try:
             self._callback()
         except Exception as exc:                      # never let it reach C
@@ -1868,7 +1997,7 @@ class HotKey(object):
 
     def register(self, key_code, modifiers):
         self.unregister()
-        hk_id = _EventHotKeyID(0x53545348, 1)         # 'STSH'
+        hk_id = _EventHotKeyID(0x53545348, self._number)   # 'STSH'
         status = _carbon.RegisterEventHotKey(
             int(key_code), int(modifiers), hk_id,
             _carbon.GetApplicationEventTarget(), 0, ctypes.byref(self._ref))
@@ -1975,6 +2104,44 @@ META_H = 13
 THUMB_BOX_H = CARD_H - 2 * CARD_PAD - DATE_H - META_H - 6
 
 
+def strip_overhead():
+    """Window height that is not card: header, margins, hint bar, title bar."""
+    return HEADER_H + 2 * MARGIN + 18 + HINT_H + TITLE_H
+
+
+def column_overhead():
+    """Column width that is not card: margins and the scroller."""
+    return 2 * MARGIN + 16
+
+
+def strip_height_range():
+    return (strip_overhead() + CUSTOM_H_RANGE[0],
+            strip_overhead() + CUSTOM_H_RANGE[1])
+
+
+def column_width_range():
+    return (column_overhead() + CUSTOM_W_RANGE[0],
+            column_overhead() + CUSTOM_W_RANGE[1])
+
+
+def fit_to_layout(w, h):
+    """The strip's height, or the column's width, when the user has set one,
+    decides the card: its height (strip) or width (column), with the chosen
+    card size's proportions kept.  0 leaves the card size in charge.  The
+    preference is per Mac because NSUserDefaults is: a smaller display gets
+    its own number and the other Mac's is not touched."""
+    layout = pref(DEF_LAYOUT)
+    if layout == "strip" and int(pref(DEF_STRIP_H)) > 0:
+        lo, hi = strip_height_range()
+        height = max(lo, min(hi, int(pref(DEF_STRIP_H)))) - strip_overhead()
+        return int(round(height * w / float(h))), height
+    if layout == "column" and int(pref(DEF_COLUMN_W)) > 0:
+        lo, hi = column_width_range()
+        width = max(lo, min(hi, int(pref(DEF_COLUMN_W)))) - column_overhead()
+        return width, int(round(width * h / float(w)))
+    return w, h
+
+
 def apply_card_size():
     """Card size is a preference, so the measurements that hang off it are
     recomputed rather than fixed at import time.  Everything that draws or
@@ -1982,6 +2149,7 @@ def apply_card_size():
     global CARD_W, CARD_H, THUMB_BOX_H, STRIP_CONTENT_H, STRIP_H
     global COLUMN_CONTENT_W
     CARD_W, CARD_H = card_dims(card_size_name())
+    CARD_W, CARD_H = fit_to_layout(CARD_W, CARD_H)
     THUMB_BOX_H = CARD_H - 2 * CARD_PAD - DATE_H - META_H - 6
     STRIP_CONTENT_H = HEADER_H + 2 * MARGIN + CARD_H + 18 + HINT_H
     STRIP_H = STRIP_CONTENT_H + TITLE_H
@@ -2038,6 +2206,9 @@ class GridView(NSView):
         self.single_col = False           # column layout: one scrolling column
         self.delegate = None
         self._tracking = None
+        self._press = None      # (index, point, activate) between down and up
+        self._drag = None       # {"src", "pos", "point", "offset"} while dragging
+        self._auto = None       # the edge-scroll timer
         return self
 
     # -- geometry ---------------------------------------------------------
@@ -2239,10 +2410,13 @@ class GridView(NSView):
     # -- drawing ----------------------------------------------------------
 
     def drawRect_(self, dirty):
-        NSColor.windowBackgroundColor().setFill()
+        bg_color().setFill()
         NSBezierPath.fillRect_(dirty)
         if not self._items:
             self._drawEmpty_(dirty)
+            return
+        if self._drag is not None and self._drag["gap"]:
+            self._drawWithGap()
             return
         for i in range(len(self._items)):
             r = self.cardRect_(i)
@@ -2252,6 +2426,69 @@ class GridView(NSView):
                     r.origin.x > dirty.origin.x + dirty.size.width):
                 continue
             self._drawCard_index_(r, i)
+        if self._drag is not None:
+            self._drawDragOverlay()
+
+    @objc.python_method
+    def _drawWithGap(self):
+        drag = self._drag
+        _targets, hole = self._dragTargets()
+        for i, it in enumerate(self._items):
+            if i == drag["src"]:
+                continue
+            r = drag["rects"].get(it.id, self.cardRect_(i))
+            self._drawCard_index_(r, i)
+        # The space left open: an outline where the card will land.
+        NSColor.controlAccentColor().colorWithAlphaComponent_(0.18).setFill()
+        outline = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+            hole, 8, 8)
+        outline.fill()
+        NSColor.controlAccentColor().setStroke()
+        outline.setLineWidth_(1.5)
+        outline.stroke()
+        self._drawGhost()
+
+    @objc.python_method
+    def _drawDragOverlay(self):
+        drag = self._drag
+        src, pos, point = drag["src"], drag["pos"], drag["point"]
+        n = len(self._items)
+        # The place it will land: a bar in the gap before card `pos`, or
+        # after the last card.
+        if pos < n:
+            r = self.cardRect_(pos)
+            before = True
+        else:
+            r = self.cardRect_(n - 1)
+            before = False
+        NSColor.controlAccentColor().setFill()
+        if self.single_col:
+            y = (r.origin.y - GAP / 2.0 if before
+                 else r.origin.y + r.size.height + GAP / 2.0)
+            bar = NSMakeRect(r.origin.x, y - 1.5, r.size.width, 3)
+        else:
+            x = (r.origin.x - GAP / 2.0 if before
+                 else r.origin.x + r.size.width + GAP / 2.0)
+            bar = NSMakeRect(x - 1.5, r.origin.y, 3, r.size.height)
+        NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+            bar, 1.5, 1.5).fill()
+        self._drawGhost()
+
+    @objc.python_method
+    def _drawGhost(self):
+        drag = self._drag
+        src, point = drag["src"], drag["point"]
+        # The card itself, following the pointer.
+        ox, oy = drag["offset"]
+        ghost = NSMakeRect(point.x - ox, point.y - oy, CARD_W, CARD_H)
+        NSGraphicsContext.saveGraphicsState()
+        shadow = NSShadow.alloc().init()
+        shadow.setShadowBlurRadius_(10)
+        shadow.setShadowOffset_(NSMakeSize(0, -3))
+        shadow.setShadowColor_(NSColor.blackColor().colorWithAlphaComponent_(0.4))
+        shadow.set()
+        self._drawCard_index_(ghost, src)
+        NSGraphicsContext.restoreGraphicsState()
 
     def _drawEmpty_(self, dirty):
         text = "Nothing here yet.\nCopy something and it will show up."
@@ -2425,13 +2662,153 @@ class GridView(NSView):
             return
         self._selectOnly_(index)
         self.setNeedsDisplay_(True)
-        if self.delegate is not None:
-            # A single click is the whole point of a picker: choose the item
-            # and get out of the way.  Option-click selects without choosing,
-            # for looking through the history without disturbing the
-            # pasteboard.
-            if flags & NSEventModifierFlagOption:
+        # A single click is the whole point of a picker: choose the item
+        # and get out of the way.  Option-click selects without choosing,
+        # for looking through the history without disturbing the
+        # pasteboard.  The choice is made when the button comes UP, so that
+        # a press that turns into a drag moves the card instead.
+        activate = (self.delegate is not None
+                    and not (flags & NSEventModifierFlagOption))
+        self._press = (index, point, activate)
+
+    # -- dragging a card to a new place ------------------------------------
+
+    DRAG_SLOP = 5
+
+    @objc.python_method
+    def _dropPosition_(self, point):
+        """Where a dragged card would be inserted, 0..len, in the list as it
+        stands now: the nearest card's near or far side, by reading order."""
+        n = len(self._items)
+        if n == 0:
+            return 0
+        best, best_d = 0, None
+        for i in range(n):
+            r = self.cardRect_(i)
+            cx = r.origin.x + r.size.width / 2.0
+            cy = r.origin.y + r.size.height / 2.0
+            d = (point.x - cx) ** 2 + (point.y - cy) ** 2
+            if best_d is None or d < best_d:
+                best, best_d = i, d
+        r = self.cardRect_(best)
+        if self.single_col:
+            after = point.y > r.origin.y + r.size.height / 2.0
+        else:
+            after = point.x > r.origin.x + r.size.width / 2.0
+        return best + (1 if after else 0)
+
+    def mouseDragged_(self, event):
+        if self._press is None:
+            return
+        point = self.convertPoint_fromView_(event.locationInWindow(), None)
+        index, start, _activate = self._press
+        if self._drag is None:
+            if (abs(point.x - start.x) < self.DRAG_SLOP and
+                    abs(point.y - start.y) < self.DRAG_SLOP):
                 return
+            if len(self._items) < 2:
+                return
+            r = self.cardRect_(index)
+            self._drag = {"src": index, "point": point,
+                          "pos": self._dropPosition_(point),
+                          "offset": (start.x - r.origin.x,
+                                     start.y - r.origin.y),
+                          "moved": time.time(), "gap": False,
+                          "rects": {it.id: self.cardRect_(i)
+                                    for i, it in enumerate(self._items)}}
+            # Held at an edge, the list keeps scrolling under the card until
+            # the button is released, with or without further mouse movement.
+            self._auto = NSTimer.timerWithTimeInterval_target_selector_userInfo_repeats_(
+                0.03, self, "autoscrollTick:", None, True)
+            NSRunLoop.currentRunLoop().addTimer_forMode_(
+                self._auto, NSRunLoopCommonModes)
+        self._noteDragPoint_(point)
+        self.setNeedsDisplay_(True)
+
+    @objc.python_method
+    def _noteDragPoint_(self, point):
+        drag = self._drag
+        old = drag["point"]
+        if abs(point.x - old.x) > 2 or abs(point.y - old.y) > 2:
+            drag["moved"] = time.time()
+        drag["point"] = point
+        drag["pos"] = self._dropPosition_(point)
+
+    @objc.python_method
+    def _dragTargets(self):
+        """Where each other card goes while a gap is open: the cards close
+        up over the one lifted out, and part at the drop position."""
+        drag = self._drag
+        src, pos = drag["src"], drag["pos"]
+        final = pos - 1 if pos > src else pos
+        targets = {}
+        k = 0
+        for i, it in enumerate(self._items):
+            if i == src:
+                continue
+            slot = k if k < final else k + 1
+            targets[it.id] = self.cardRect_(slot)
+            k += 1
+        return targets, self.cardRect_(final)
+
+    def autoscrollTick_(self, timer):
+        if self._drag is None or self.window() is None:
+            return
+        loc = self.window().mouseLocationOutsideOfEventStream()
+        point = self.convertPoint_fromView_(loc, None)
+        vis = self.visibleRect()
+        edge, top_speed = 48.0, 26.0
+        dx = dy = 0.0
+        if self.single_row or (not self.single_col and
+                               self.bounds().size.width > vis.size.width + 1):
+            if point.x < vis.origin.x + edge:
+                dx = -top_speed * min(1.0, (vis.origin.x + edge - point.x) / edge)
+            elif point.x > vis.origin.x + vis.size.width - edge:
+                dx = top_speed * min(1.0, (point.x - (vis.origin.x + vis.size.width - edge)) / edge)
+        if not self.single_row:
+            if point.y < vis.origin.y + edge:
+                dy = -top_speed * min(1.0, (vis.origin.y + edge - point.y) / edge)
+            elif point.y > vis.origin.y + vis.size.height - edge:
+                dy = top_speed * min(1.0, (point.y - (vis.origin.y + vis.size.height - edge)) / edge)
+        if dx or dy:
+            x = max(0.0, min(self.bounds().size.width - vis.size.width,
+                             vis.origin.x + dx))
+            y = max(0.0, min(self.bounds().size.height - vis.size.height,
+                             vis.origin.y + dy))
+            self.scrollPoint_(NSMakePoint(x, y))
+        self._noteDragPoint_(point)
+        # Paused over a spot: the cards slide apart to leave a space, as the
+        # Dock does, and the space follows from then on.
+        if not self._drag["gap"] and time.time() - self._drag["moved"] > 0.3:
+            self._drag["gap"] = True
+        if self._drag["gap"]:
+            targets, _hole = self._dragTargets()
+            rects = self._drag["rects"]
+            for item_id, goal in targets.items():
+                cur = rects.get(item_id, goal)
+                rects[item_id] = NSMakeRect(
+                    cur.origin.x + (goal.origin.x - cur.origin.x) * 0.4,
+                    cur.origin.y + (goal.origin.y - cur.origin.y) * 0.4,
+                    CARD_W, CARD_H)
+        self.setNeedsDisplay_(True)
+
+    def mouseUp_(self, event):
+        press, drag = self._press, self._drag
+        self._press, self._drag = None, None
+        if self._auto is not None:
+            self._auto.invalidate()
+            self._auto = None
+        self.setNeedsDisplay_(True)
+        if press is None:
+            return
+        index, _start, activate = press
+        if drag is not None:
+            src, pos = drag["src"], drag["pos"]
+            final = pos - 1 if pos > src else pos
+            if final != src and self.delegate is not None:
+                self.delegate.gridDidMove_to_(self._items[src], final)
+            return
+        if activate and 0 <= index < len(self._items):
             self.delegate.gridDidActivate_(self._items[index])
 
     def rightMouseDown_(self, event):
@@ -2722,7 +3099,7 @@ class HeaderView(NSView):
             self.controller._layoutHeader()
 
     def drawRect_(self, dirty):
-        NSColor.windowBackgroundColor().setFill()
+        bg_color().setFill()
         NSBezierPath.fillRect_(self.bounds())
         NSColor.separatorColor().setFill()
         NSBezierPath.fillRect_(NSMakeRect(0, 0, self.bounds().size.width, 1))
@@ -2818,7 +3195,7 @@ class HintView(NSView):
     """
 
     def drawRect_(self, dirty):
-        NSColor.windowBackgroundColor().setFill()
+        bg_color().setFill()
         NSBezierPath.fillRect_(self.bounds())
         NSColor.separatorColor().setFill()
         NSBezierPath.fillRect_(NSMakeRect(0, self.bounds().size.height - 1,
@@ -2956,6 +3333,11 @@ class PickerController(NSObject):
         panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
             frame, style, NSBackingStoreBuffered, False)
         panel.setTitle_("Stache")
+        if bg_is_clear():
+            # "None": see-through, so the desktop shows between the cards.
+            panel.setOpaque_(False)
+            panel.setBackgroundColor_(NSColor.clearColor())
+            panel.setHasShadow_(False)
         decorate_titlebar(panel, compact=column)
         adapt_titlebar(panel)
         panel.setReleasedWhenClosed_(False)
@@ -2963,15 +3345,29 @@ class PickerController(NSObject):
         if strip:
             # min/max are WINDOW sizes, so they need the chrome the panel
             # actually has rather than an assumed title-bar height.
-            locked = STRIP_CONTENT_H + self._chrome_(panel)
-            panel.setMinSize_(NSMakeSize(CARD_W + 2 * MARGIN + 40, locked))
-            panel.setMaxSize_(NSMakeSize(100000, locked))
+            # The height is DRAGGABLE since 2.23: it sets the card height
+            # (see fit_to_layout), between the smallest readable card and
+            # the largest, and never past the screen.
+            chrome = self._chrome_(panel)
+            base = STRIP_CONTENT_H - CARD_H + chrome
+            visible = self._activeScreen().visibleFrame()
+            top = min(base + CUSTOM_H_RANGE[1],
+                      visible.size.height - 2 * STRIP_EDGE)
+            panel.setMinSize_(NSMakeSize(CARD_W + 2 * MARGIN + 40,
+                                         base + CUSTOM_H_RANGE[0]))
+            panel.setMaxSize_(NSMakeSize(100000,
+                                         max(top, base + CUSTOM_H_RANGE[0])))
         elif column:
-            # The mirror: the WIDTH is locked to one card, the height is
-            # yours to drag.
-            panel.setMinSize_(NSMakeSize(COLUMN_CONTENT_W,
+            # The mirror: the width is draggable too, and sets the card
+            # width, between the smallest readable card and the largest,
+            # never past the screen.
+            visible = self._activeScreen().visibleFrame()
+            lo, hi = column_width_range()
+            panel.setMinSize_(NSMakeSize(lo,
                                          CARD_H + 120 + self._chrome_(panel)))
-            panel.setMaxSize_(NSMakeSize(COLUMN_CONTENT_W, 100000))
+            panel.setMaxSize_(NSMakeSize(
+                max(lo, min(hi, visible.size.width - 2 * STRIP_EDGE)),
+                100000))
         else:
             panel.setMinSize_(NSMakeSize(2 * CARD_W + 3 * GAP + 40, 320))
         # NSPanel's hidesOnDeactivate is YES by default.  For an accessory
@@ -3083,8 +3479,8 @@ class PickerController(NSObject):
         # Draw the background rather than leaving it clear: the horizontal
         # scroller's track sits below the cards, and an undrawn scroll view
         # left it as a white band across the bottom of the strip.
-        self.scroll.setDrawsBackground_(True)
-        self.scroll.setBackgroundColor_(NSColor.windowBackgroundColor())
+        self.scroll.setDrawsBackground_(not bg_is_clear())
+        self.scroll.setBackgroundColor_(bg_color())
         self.scroll.setAutoresizingMask_(
             NSViewWidthSizable | NSViewHeightSizable)
         content.addSubview_(self.scroll)
@@ -3126,6 +3522,8 @@ class PickerController(NSObject):
         # final once the panel has taken its real size.
         self.grid.relayout()
         self.grid.selectNewest()
+        if not (self.isStrip() or self.isColumn()):
+            self._fitGridHeight()
         # Activate first, then order front: an accessory app that orders a
         # window front before it is active can have that window hidden out
         # from under it before the activation lands.
@@ -3141,6 +3539,27 @@ class PickerController(NSObject):
             self._pending_status = None
             if time.time() - held[1] < 300:
                 self._announceStatus_(held[0])
+
+    def _fitGridHeight(self):
+        """Grid layout: no taller than its cards need, and open at the TOP.
+
+        A frame saved from a taller moment, or reading order's newest card at
+        the bottom, used to open the grid scrolled to the end with empty space
+        below the last row."""
+        if self.grid.superview() is not None:
+            view_h = self.scroll.frame().size.height
+            extra = view_h - self.grid.contentHeight()
+            if extra > 0:
+                frame = self.panel.frame()
+                new_h = max(self.panel.minSize().height,
+                            frame.size.height - extra)
+                if new_h < frame.size.height:
+                    # Shrink from the bottom: the top edge stays where it was.
+                    frame.origin.y += frame.size.height - new_h
+                    frame.size.height = new_h
+                    self.panel.setFrame_display_(frame, False)
+                    self.grid.relayout()
+        self.grid.scrollPoint_(NSMakePoint(0, 0))
 
     def reopenAfterRebuild_kind_(self, query, kind):
         """Back on screen with the search and filter that were in force.
@@ -3299,6 +3718,14 @@ class PickerController(NSObject):
         screen that is no longer attached is remembered just as faithfully.
         """
         defaults().removeObjectForKey_(self.frameKey())
+        if (int(pref(DEF_STRIP_H)) or int(pref(DEF_COLUMN_W))):
+            # A dragged size goes back to the card size's own.
+            set_pref(DEF_STRIP_H, 0)
+            set_pref(DEF_COLUMN_W, 0)
+            apply_card_size()
+            self.app.performSelector_withObject_afterDelay_(
+                "rebuildAfterDrag:", None, 0.0)
+            return
         self.parkAtDefault()
         self.grid.relayout()
         self.status.setTextColor_(NSColor.secondaryLabelColor())
@@ -3425,6 +3852,31 @@ class PickerController(NSObject):
 
     def windowDidResize_(self, note):
         adapt_titlebar(self.panel)
+
+    def windowDidEndLiveResize_(self, note):
+        """The strip's height or the column's width was dragged: that is now
+        the size, kept in this Mac's preferences, and the cards follow it."""
+        if self.isStrip():
+            content = self.panel.frame().size.height - self._chrome_(self.panel)
+            value = int(round(content + TITLE_H))
+            key = DEF_STRIP_H
+            unchanged = abs(content - STRIP_CONTENT_H) < 1
+        elif self.isColumn():
+            value = int(round(self.panel.frame().size.width))
+            key = DEF_COLUMN_W
+            unchanged = abs(value - COLUMN_CONTENT_W) < 1
+        else:
+            return
+        if unchanged:
+            return
+        set_pref(key, value)
+        apply_card_size()
+        defaults().setObject_forKey_(
+            NSStringFromRect(self.panel.frame()), self.frameKey())
+        # Not from inside this panel's own delegate call: the rebuild
+        # retires this very panel.
+        self.app.performSelector_withObject_afterDelay_(
+            "rebuildAfterDrag:", None, 0.0)
 
     def cancelOperation_(self, sender):        # Esc
         self.hide()
@@ -3691,6 +4143,20 @@ class PickerController(NSObject):
         self.panel.makeFirstResponder_(self.grid)
 
     # -- grid delegate ----------------------------------------------------
+
+    def gridDidMove_to_(self, item, final):
+        """A card was dragged to a new place in the list as drawn."""
+        others = [i for i in self.grid.items() if i.id != item.id]
+        final = max(0, min(len(others), final))
+        prev_id = others[final - 1].id if final > 0 else None
+        next_id = others[final].id if final < len(others) else None
+        self.app.store.move_item(item.id, prev_id, next_id,
+                                 bool(pref(DEF_OLDEST_FIRST)))
+        offset = self.grid.visibleRect().origin
+        self.reload()
+        # Reloading re-sorts and may reset the scroll; the card stays put on
+        # screen, which is what dragging it there meant.
+        self.grid.scrollPoint_(offset)
 
     def gridDidActivate_(self, item):
         """Copy, say so, and KEEP the keyboard.
@@ -4787,9 +5253,19 @@ HELP_INTRO = (
 HELP_SECTIONS = (
     ("Getting it open", (
         ("%s", "open the picker from anywhere"),
-        ("menu bar S", "About, Preferences, Help, Check for Updates, "
-                        "Open, Pause Capturing and Quit. Deliberately no clippings: a "
-                        "menu opens with one click and no authentication"),
+        ("Save location", "a second hotkey, ⌃⌥⌘L by default (change it "
+                          "in Preferences → Save location), saves the front "
+                          "Finder window's folder under a name you give it, "
+                          "as a line in ~/.go_locations in go.claude's format. "
+                          "The `go` tool in Terminal and GoBrowser.app read "
+                          "that same file. A name already there is refused"),
+        ("Automation", "the first time, macOS asks to let Stache control "
+                       "Finder (System Settings → Privacy & Security → "
+                       "Automation). If denied, nothing is saved and Stache "
+                       "says so; everything else keeps working"),
+        ("Open With", "Stache is in Finder's Open With list for images and "
+                      "text files only: opening one puts it in the history "
+                      "and on the clipboard"),
     )),
     ("Choosing a clipping", (
         ("click", "copy it and close — this is the whole point"),
@@ -4922,6 +5398,11 @@ HELP_SECTIONS = (
                      "most or Delete after in Preferences"),
         ("⌘+ / ⌘− / ⌘0", "in this window: bigger text, smaller text, "
                             "back to normal"),
+        ("drag to resize", "pull the strip's top edge up or down, or the "
+                           "column's side in or out, up to the edges of the "
+                           "screen: the cards grow or shrink with it, and "
+                           "the size is kept for this Mac. ⌘0 or picking a "
+                           "card size in Preferences goes back to the preset"),
         ("Strip / Column / Grid",
          "a row along the bottom, a column up the left edge, or a window of "
          "rows. Drag any of them anywhere and resize them — the place is "
@@ -5089,6 +5570,7 @@ class PrefsController(NSObject):
         self.app = app
         self._monitor = None
         self._chord = None      # (code, mods) recorded but not yet saved
+        self._loc_chord = None  # same, for the Save-location chord
         self._build()
         return self
 
@@ -5099,7 +5581,7 @@ class PrefsController(NSObject):
         mean nudging every number under it, and the Clear button ended up at
         y = -8, below the bottom edge of the panel.
         """
-        rows = 10
+        rows = 15
         height = TOP_PAD + rows * ROW_H + BOTTOM_PAD
         panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(0, 0, PREFS_W, height),
@@ -5161,7 +5643,7 @@ class PrefsController(NSObject):
         view.addSubview_(self.strip_pct)
         view.addSubview_(_plain("% of the screen (wide, or tall in a column)",
                                 FIELD_X + 78,
-                                row(2) + 4, 190))
+                                row(2) + 4, 290))
 
         view.addSubview_(_right_label("Hotkey:", row(3) + 5))
         self.hotkey_button = NSButton.alloc().initWithFrame_(
@@ -5173,37 +5655,103 @@ class PrefsController(NSObject):
         view.addSubview_(_plain("click, then press the chord",
                                 FIELD_X + 168, row(3) + 5, 180))
 
-        view.addSubview_(_right_label("Keep at most:", row(4) + 4))
+        view.addSubview_(_right_label("Save location:", row(4) + 5))
+        self.loc_button = NSButton.alloc().initWithFrame_(
+            NSMakeRect(FIELD_X, row(4), 160, 28))
+        self.loc_button.setBezelStyle_(1)
+        self.loc_button.setTarget_(self)
+        self.loc_button.setAction_("recordLocationHotkey:")
+        view.addSubview_(self.loc_button)
+        view.addSubview_(_plain("front Finder window, for go",
+                                FIELD_X + 168, row(4) + 5, 180))
+
+        view.addSubview_(_right_label("Keep at most:", row(5) + 4))
         self.max_items = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(FIELD_X, row(4) + 2, 70, 22))
+            NSMakeRect(FIELD_X, row(5) + 2, 70, 22))
         self.max_items.setTarget_(self)
         self.max_items.setAction_("stage:")
         view.addSubview_(self.max_items)
         view.addSubview_(_plain("items  (0 = no limit)", FIELD_X + 78,
-                                row(4) + 4, 190))
+                                row(5) + 4, 190))
 
-        view.addSubview_(_right_label("Delete after:", row(5) + 4))
+        view.addSubview_(_right_label("Delete after:", row(6) + 4))
         self.max_days = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(FIELD_X, row(5) + 2, 70, 22))
+            NSMakeRect(FIELD_X, row(6) + 2, 70, 22))
         self.max_days.setTarget_(self)
         self.max_days.setAction_("stage:")
         view.addSubview_(self.max_days)
         view.addSubview_(_plain("days  (0 = never)", FIELD_X + 78,
-                                row(5) + 4, 190))
+                                row(6) + 4, 190))
 
         self.capture_images = _switch(
-            "Capture images as well as text", row(6) + 4,
+            "Capture images as well as text", row(7) + 4,
             self, "stage:")
         view.addSubview_(self.capture_images)
 
 
         self.oldest_first = _switch(
-            "Show oldest first (reading order)", row(7) + 4,
+            "Show oldest first (reading order)", row(8) + 4,
             self, "stage:")
         view.addSubview_(self.oldest_first)
 
+        view.addSubview_(_right_label("Background:", row(9) + 4))
+        # 3 x 3 swatches: the eight colours round the edge, "none"
+        # (transparent) in the middle; System is a button of its own.
+        self.bg_swatches = {}
+        layout = ["black", "white", "gray",
+                  "red", "none", "orange",
+                  "yellow", "green", "blue"]
+        for n, name in enumerate(layout):
+            r, c = divmod(n, 3)
+            b = NSButton.alloc().initWithFrame_(
+                NSMakeRect(FIELD_X + c * 36, row(9 + r) + 2, 28, 28))
+            b.setBordered_(False)
+            b.setWantsLayer_(True)
+            b.setTitle_("")
+            b.setTarget_(self)
+            b.setAction_("pickSwatch:")
+            b.setToolTip_("None (transparent)" if name == "none" else
+                          dict((k, l) for k, l, _c in BG_COLORS)[name])
+            layer = b.layer()
+            layer.setCornerRadius_(5)
+            if name == "none":
+                # A red X: no colour at all.
+                b.setAttributedTitle_(NSAttributedString.alloc()
+                                      .initWithString_attributes_(
+                    "\u2715", {
+                        NSForegroundColorAttributeName: NSColor.systemRedColor(),
+                        NSFontAttributeName: NSFont.boldSystemFontOfSize_(18),
+                        NSParagraphStyleAttributeName: _para(alignment=1),
+                    }))
+            else:
+                rgb = dict((k, c3) for k, _l, c3 in BG_COLORS)[name]
+                layer.setBackgroundColor_(
+                    NSColor.colorWithSRGBRed_green_blue_alpha_(
+                        rgb[0], rgb[1], rgb[2], 1.0).CGColor())
+            self.bg_swatches[name] = b
+            view.addSubview_(b)
+        self.bg_system = NSButton.alloc().initWithFrame_(
+            NSMakeRect(FIELD_X + 3 * 36 + 12, row(10) + 2, 120, 26))
+        self.bg_system.setTitle_("System color")
+        self.bg_system.setBezelStyle_(1)
+        self.bg_system.setTarget_(self)
+        self.bg_system.setAction_("pickSwatch:")
+        view.addSubview_(self.bg_system)
+
+        view.addSubview_(_right_label("Shade:", row(12) + 4))
+        self.bg_shade = NSSlider.alloc().initWithFrame_(
+            NSMakeRect(FIELD_X, row(12) + 2, 176, 22))
+        self.bg_shade.setMinValue_(-100)
+        self.bg_shade.setMaxValue_(100)
+        self.bg_shade.setContinuous_(True)
+        self.bg_shade.setTarget_(self)
+        self.bg_shade.setAction_("pickBackground:")
+        view.addSubview_(self.bg_shade)
+        view.addSubview_(_plain("darker \u2194 lighter", FIELD_X + 184,
+                                row(12) + 4, 120))
+
         self.login_item = _switch(
-            "Open Stache at login", row(8) + 4, self, "stage:")
+            "Open Stache at login", row(13) + 4, self, "stage:")
         view.addSubview_(self.login_item)
 
         # There is deliberately no Clear History: one click from deleting
@@ -5248,9 +5796,29 @@ class PrefsController(NSObject):
 
         self.panel = panel
 
+    DISPLAY_KEYS = (DEF_LAYOUT, DEF_CARD_SIZE, DEF_CUSTOM_W, DEF_CUSTOM_H,
+                    DEF_STRIP_PCT, DEF_STRIP_H, DEF_COLUMN_W, DEF_BG, DEF_BG_SHADE,
+                    DEF_STRIP_FRAME, DEF_COLUMN_FRAME)
+
     def show(self):
         self._chord = None
+        self._loc_chord = None
+        self._saved = False
+        # What the picker looked like on the way in: Cancel and the close
+        # button put it back, since the display changes apply as you go.
+        self._snapshot = {k: defaults().objectForKey_(k)
+                          for k in self.DISPLAY_KEYS}
         self.refresh()
+        # The shade slider always starts at zero.
+        # The shade already applied is kept: it becomes the colour itself,
+        # and the slider shades from there.
+        rgb = bg_base_rgb(str(pref(DEF_BG)))
+        if rgb is not None and int(pref(DEF_BG_SHADE)) != 0:
+            r, g, b = shade_rgb(rgb, pref(DEF_BG_SHADE))
+            set_pref(DEF_BG, "rgb:%.4f,%.4f,%.4f" % (r, g, b))
+            set_pref(DEF_BG_SHADE, 0)
+        self.bg_shade.setIntegerValue_(0)
+        self._selectBackground(str(pref(DEF_BG)))
         self.panel.center()
         self.panel.makeKeyAndOrderFront_(None)
         NSApp.activateIgnoringOtherApps_(True)
@@ -5276,6 +5844,38 @@ class PrefsController(NSObject):
         self.custom_h.setEnabled_(card_size_name() == "custom")
         self.strip_pct.setStringValue_(str(pref(DEF_STRIP_PCT)))
         self.strip_pct.setEnabled_(pref(DEF_LAYOUT) != "grid")
+        self._selectBackground(str(pref(DEF_BG)))
+        self.bg_shade.setIntegerValue_(pref(DEF_BG_SHADE))
+
+    @objc.python_method
+    def _selectBackground(self, name):
+        """Mark the chosen swatch (or System) and remember the choice."""
+        valid = ("", "none") + tuple(k for k, _l, _c in BG_COLORS)
+        kept = name.startswith("rgb:") and bg_base_rgb(name) is not None
+        self._bg_name = name if (name in valid or kept) else ""
+        for key, b in self.bg_swatches.items():
+            on = key == self._bg_name
+            b.layer().setBorderWidth_(3 if on else 1)
+            b.layer().setBorderColor_(
+                (NSColor.controlAccentColor() if on
+                 else NSColor.separatorColor()).CGColor())
+        self.bg_system.setState_(1 if self._bg_name == "" else 0)
+        self.bg_shade.setEnabled_(self._bg_name not in ("", "none"))
+
+    def pickSwatch_(self, sender):
+        name = ""
+        for key, b in self.bg_swatches.items():
+            if b is sender:
+                name = key
+        # A new colour starts fresh: it becomes the colour, and the slider
+        # shades it from zero.
+        self.bg_shade.setIntegerValue_(0)
+        self._selectBackground(name)
+        self._applyLive()
+
+    def pickBackground_(self, sender):
+        """The shade slider."""
+        self._applyLive()
 
     def _titleCardMenu(self):
         titles = []
@@ -5293,6 +5893,9 @@ class PrefsController(NSObject):
         code, mods = self._chord or (pref(DEF_HOTKEY_CODE),
                                      pref(DEF_HOTKEY_MODS))
         self.hotkey_button.setTitle_(hotkey_label(code, mods))
+        code, mods = self._loc_chord or (pref(DEF_LOC_CODE),
+                                         pref(DEF_LOC_MODS))
+        self.loc_button.setTitle_(hotkey_label(code, mods))
 
     # -- actions ----------------------------------------------------------
 
@@ -5306,11 +5909,19 @@ class PrefsController(NSObject):
         self.custom_w.setEnabled_(custom)
         self.custom_h.setEnabled_(custom)
         self._titleCardMenu()
+        self._applyLive()
 
     def recordHotkey_(self, sender):
+        self.recordChord(sender, "_chord")
+
+    def recordLocationHotkey_(self, sender):
+        self.recordChord(sender, "_loc_chord")
+
+    @objc.python_method
+    def recordChord(self, button, slot):
         if self._monitor is not None:
             return
-        self.hotkey_button.setTitle_("Press a chord…")
+        button.setTitle_("Press a chord…")
 
         def handler(event):
             mods = carbon_mods(event.modifierFlags())
@@ -5328,7 +5939,14 @@ class PrefsController(NSObject):
                        "A hotkey with no modifier would be taken away from "
                        "every other app.")
                 return None
-            self._chord = (code, mods)       # applied by Save
+            other = self._loc_chord or (pref(DEF_LOC_CODE), pref(DEF_LOC_MODS))
+            mine = self._chord or (pref(DEF_HOTKEY_CODE), pref(DEF_HOTKEY_MODS))
+            if (code, mods) == (other if slot == "_chord" else mine):
+                self._showChord()
+                _alert("That chord is already in use",
+                       "Stache's two hotkeys need different chords.")
+                return None
+            setattr(self, slot, (code, mods))   # applied by Save
             self._showChord()
             return None
 
@@ -5338,14 +5956,95 @@ class PrefsController(NSObject):
     def windowWillClose_(self, note):
         # Closing by any route but Save discards what was staged, so the
         # panel never reopens showing an edit that was not applied.
+        # The display settings applied live; unless Save was pressed, put
+        # them back as they were when Preferences opened.
+        snap = getattr(self, "_snapshot", None)
+        if snap is not None and not getattr(self, "_saved", True):
+            changed = False
+            for k, v in snap.items():
+                now = defaults().objectForKey_(k)
+                if now != v:
+                    # Writing a default's own value is not a change.
+                    if (now if now is not None else DEFAULTS.get(k)) != (
+                            v if v is not None else DEFAULTS.get(k)):
+                        changed = True
+                    if v is None:
+                        defaults().removeObjectForKey_(k)
+                    else:
+                        defaults().setObject_forKey_(v, k)
+            if changed:
+                apply_card_size()
+                self.app.rebuildPicker()
+        self._snapshot = None
         if self._monitor is not None:
             NSEvent.removeMonitor_(self._monitor)
             self._monitor = None
         self._chord = None
+        self._loc_chord = None
         self.refresh()
         picker = getattr(self.app, "picker", None) if self.app else None
         if picker is not None:
             picker.releaseHold()
+
+    @objc.python_method
+    def _applyDisplay(self, cw, ch, percent):
+        """Layout, card size, strip width and background: the settings the
+        picker shows.  Applied as they are chosen, so the picker behind this
+        panel is the preview; returns whether the picker needs rebuilding."""
+        layout = ("strip", "column", "grid")[
+            max(0, min(2, self.layout_menu.indexOfSelectedItem()))]
+        card = ("large", "medium", "small", "custom")[
+            max(0, min(3, self.card_menu.indexOfSelectedItem()))]
+        was = (card_size_name(), card_dims("custom"), pref(DEF_LAYOUT))
+        set_pref(DEF_CUSTOM_W, cw)
+        set_pref(DEF_CUSTOM_H, ch)
+        set_pref(DEF_CARD_SIZE, card)
+        set_pref(DEF_LAYOUT, layout)
+        now = (card, card_dims("custom"), layout)
+        # Custom's measurements only matter while Custom is in use.
+        resized = card != was[0] or (card == "custom" and now[1] != was[1])
+        rebuild = layout != was[2] or resized
+        if resized:
+            # Choosing a preset starts again from it: a size dragged out
+            # under the old preset would otherwise outrank the new one.
+            set_pref(DEF_STRIP_H, 0)
+            set_pref(DEF_COLUMN_W, 0)
+        if resized or layout != was[2]:
+            apply_card_size()
+        if resized:
+            # The strip's height is a function of the card height, so the
+            # frame saved at the old size no longer describes this panel.
+            defaults().removeObjectForKey_(DEF_STRIP_FRAME)
+            defaults().removeObjectForKey_(DEF_COLUMN_FRAME)
+        if percent != pref(DEF_STRIP_PCT):
+            set_pref(DEF_STRIP_PCT, percent)
+            # Forget the remembered frame so the new width is used.
+            defaults().removeObjectForKey_(DEF_STRIP_FRAME)
+        if layout != pref(DEF_LAYOUT):
+            set_pref(DEF_LAYOUT, layout)
+        bg = self._bg_name
+        shade = int(self.bg_shade.integerValue())
+        if bg != str(pref(DEF_BG)) or shade != pref(DEF_BG_SHADE):
+            set_pref(DEF_BG, bg)
+            set_pref(DEF_BG_SHADE, shade)
+            rebuild = True
+        return rebuild
+
+    def _applyLive(self):
+        """Apply the display settings now and redraw the picker."""
+        try:
+            cw = max(CUSTOM_W_RANGE[0], min(CUSTOM_W_RANGE[1],
+                                            int(self.custom_w.stringValue())))
+            ch = max(CUSTOM_H_RANGE[0], min(CUSTOM_H_RANGE[1],
+                                            int(self.custom_h.stringValue())))
+            percent = max(20, min(100, int(self.strip_pct.stringValue())))
+        except ValueError:
+            return          # half-typed number: wait for the next change
+        if self._applyDisplay(cw, ch, percent):
+            self.app.rebuildPicker()
+            picker = getattr(self.app, "picker", None)
+            if self.panel.isVisible() and hasattr(picker, "holdOpen"):
+                picker.holdOpen()
 
     def save_(self, sender):
         """Apply every change at once, then close.
@@ -5366,34 +6065,17 @@ class PrefsController(NSObject):
                    "Keep at most, Delete after, Strip size and the Custom "
                    "card width and height each take a whole number.")
             return
-        layout = ("strip", "column", "grid")[
-            max(0, min(2, self.layout_menu.indexOfSelectedItem()))]
-        card = ("large", "medium", "small", "custom")[
-            max(0, min(3, self.card_menu.indexOfSelectedItem()))]
-        was = (card_size_name(), card_dims("custom"))
-        set_pref(DEF_CUSTOM_W, cw)
-        set_pref(DEF_CUSTOM_H, ch)
-        now = (card, card_dims("custom"))
-        # Custom's measurements only matter while Custom is in use.
-        resized = card != was[0] or (card == "custom" and now[1] != was[1])
-        rebuild = layout != pref(DEF_LAYOUT) or resized
-        if resized:
-            set_pref(DEF_CARD_SIZE, card)
-            apply_card_size()
-            # The strip's height is a function of the card height, so the
-            # frame saved at the old size no longer describes this panel.
-            defaults().removeObjectForKey_(DEF_STRIP_FRAME)
-        if percent != pref(DEF_STRIP_PCT):
-            set_pref(DEF_STRIP_PCT, percent)
-            # Forget the remembered frame so the new width is used.
-            defaults().removeObjectForKey_(DEF_STRIP_FRAME)
-        if layout != pref(DEF_LAYOUT):
-            set_pref(DEF_LAYOUT, layout)
+        rebuild = self._applyDisplay(cw, ch, percent)
         if self._chord is not None:
             set_pref(DEF_HOTKEY_CODE, self._chord[0])
             set_pref(DEF_HOTKEY_MODS, self._chord[1])
             self.app.applyHotkey()
             self._chord = None
+        if self._loc_chord is not None:
+            set_pref(DEF_LOC_CODE, self._loc_chord[0])
+            set_pref(DEF_LOC_MODS, self._loc_chord[1])
+            self.app.applyHotkey()
+            self._loc_chord = None
         set_pref(DEF_CAPTURE_IMAGES, bool(self.capture_images.state()))
         order_changed = (bool(self.oldest_first.state())
                          != bool(pref(DEF_OLDEST_FIRST)))
@@ -5407,6 +6089,7 @@ class PrefsController(NSObject):
                 install_login_item()
             else:
                 remove_login_item()
+        self._saved = True
         self.panel.orderOut_(None)
         self.windowWillClose_(None)
         if rebuild:
@@ -5604,6 +6287,25 @@ def _alert(title, body):
     alert.runModal()
 
 
+def _ask_name(path, suggestion):
+    """A modal asking for the short name; the name, or None on Cancel."""
+    alert = NSAlert.alloc().init()
+    alert.setMessageText_("Save this location for go")
+    alert.setInformativeText_(path)
+    icon = own_icon()
+    if icon is not None:
+        alert.setIcon_(icon)
+    alert.addButtonWithTitle_("Save")
+    alert.addButtonWithTitle_("Cancel")
+    field = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 260, 24))
+    field.setStringValue_(suggestion)
+    alert.setAccessoryView_(field)
+    alert.window().setInitialFirstResponder_(field)
+    if alert.runModal() != 1000:               # NSAlertFirstButtonReturn
+        return None
+    return str(field.stringValue())
+
+
 # ---------------------------------------------------------------------------
 # Updates
 # ---------------------------------------------------------------------------
@@ -5733,6 +6435,159 @@ def remove_login_item():
     _unlink(AGENT_PLIST)
 
 
+
+# ---------------------------------------------------------------------------
+# Open With: a file handed to Stache by the Finder
+# ---------------------------------------------------------------------------
+
+MAX_OPENED_TEXT = 5 * 1024 * 1024        # a larger text file is not a clipping
+
+
+def read_opened_file(path):
+    """What a file opened with Stache is: ("image", png, w, h), ("text",
+    string), or None for anything Stache cannot hold."""
+    try:
+        if not os.path.isfile(path) or os.path.getsize(path) > MAX_OPENED_TEXT:
+            return None
+        with open(path, "rb") as fh:
+            raw = fh.read()
+    except OSError:
+        return None
+    if not raw:
+        return None
+    if b"\0" not in raw[:4096]:
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            text = raw.decode("mac_roman", errors="replace")
+        if text.strip():
+            return ("text", text)
+    rep = NSBitmapImageRep.imageRepWithData_(NSData.dataWithBytes_length_(
+        raw, len(raw)))
+    if rep is None:
+        return None
+    width, height = int(rep.pixelsWide()), int(rep.pixelsHigh())
+    if width <= 0 or height <= 0:
+        return None
+    png = rep.representationUsingType_properties_(NSBitmapImageFileTypePNG, {})
+    if png is None:
+        return None
+    return ("image", bytes(png), width, height)
+
+
+# ---------------------------------------------------------------------------
+# Saving a Finder location into go's bookmark file
+# ---------------------------------------------------------------------------
+#
+# ~/.go_locations is shared with the `go` shell tool and its browser, so the
+# file is theirs and Stache is a guest: it only ever appends one line, in
+# their format, and replaces the file whole (atomically) so a crash cannot
+# leave it half-written.  Format, from go.claude's write_locations: the name
+# padded to 12, a space, 'path' padded to 60, a space, yymmdd.hhmmss, a space,
+# and a type letter (d for a folder).
+
+GO_LOCATIONS = os.path.expanduser("~/.go_locations")
+
+
+class GoLocationError(Exception):
+    pass
+
+
+def go_line(name, path, when, kind="d"):
+    field = "'%s'" % path
+    return "%-12s %s%s %s %s\n" % (
+        name, field, " " * max(1, 60 - len(field)),
+        when.strftime("%y%m%d.%H%M%S"), kind)
+
+
+def go_names(text):
+    """Every mnemonic in the file, lowercased, a commented-out one included
+    (go parks a location as '#name', and reusing the name would collide when
+    it is switched back on)."""
+    names = set()
+    for line in text.splitlines():
+        parts = line.split()
+        if parts:
+            names.add(parts[0].lstrip("#").lower())
+    return names
+
+
+def suggest_go_name(path):
+    base = os.path.basename(path.rstrip("/")) or "root"
+    return "".join(ch for ch in base.lower() if not ch.isspace() and ch != "'")
+
+
+def add_go_location(name, path, when=None, store=None):
+    """Append `name 'path' stamp d` to the bookmark file.  Raises
+    GoLocationError, with words fit to show the user, instead of touching
+    the file when the name or path will not do."""
+    name = (name or "").strip()
+    if not name:
+        raise GoLocationError("Give the location a name.")
+    if any(ch.isspace() for ch in name) or "'" in name or name.startswith("#"):
+        raise GoLocationError(
+            "A name is one word, with no spaces or quotes, and not starting "
+            "with #.")
+    if "'" in path:
+        raise GoLocationError(
+            "go cannot store a path containing an apostrophe:\n%s" % path)
+    store = os.path.realpath(store or GO_LOCATIONS)
+    try:
+        with open(store, "r", encoding="utf-8") as fh:
+            current = fh.read()
+    except FileNotFoundError:
+        current = ""
+    except (OSError, UnicodeDecodeError) as exc:
+        raise GoLocationError("Could not read %s: %s" % (store, exc))
+    if name.lower() in go_names(current):
+        raise GoLocationError("\u201c%s\u201d is already a location in go." % name)
+    if current and not current.endswith("\n"):
+        current += "\n"
+    updated = current + go_line(name, path, when or datetime.now())
+    fd, tmp = tempfile.mkstemp(prefix=".go_locations.",
+                               dir=os.path.dirname(store))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(updated)
+        if os.path.exists(store):
+            shutil.copymode(store, tmp)
+        os.replace(tmp, store)
+    except OSError as exc:
+        _unlink(tmp)
+        raise GoLocationError("Could not write %s: %s" % (store, exc))
+
+
+FINDER_FOLDER_SCRIPT = """
+tell application "Finder"
+    if (count of Finder windows) is 0 then return ""
+    return POSIX path of (target of front Finder window as alias)
+end tell
+"""
+
+
+def front_finder_folder():
+    """The folder shown by the front Finder window: (path, None), or
+    (None, reason).  NSAppleScript runs inside this process, so macOS asks
+    to let *Stache* control Finder, once."""
+    script = NSAppleScript.alloc().initWithSource_(FINDER_FOLDER_SCRIPT)
+    result, error = script.executeAndReturnError_(None)
+    if result is None:
+        number = int(error.get("NSAppleScriptErrorNumber", 0)) if error else 0
+        if number == -1743:
+            return None, ("Stache is not allowed to control Finder. Turn it "
+                          "on in System Settings \u2192 Privacy & Security "
+                          "\u2192 Automation.")
+        return None, "Finder did not answer (%s)." % (
+            error.get("NSAppleScriptErrorMessage", "unknown error")
+            if error else "unknown error")
+    path = str(result.stringValue() or "")
+    if not path:
+        return None, "No Finder window is open."
+    if len(path) > 1:
+        path = path.rstrip("/")
+    return path, None
+
+
 # ---------------------------------------------------------------------------
 # The application
 # ---------------------------------------------------------------------------
@@ -5755,8 +6610,10 @@ class StacheApp(NSObject):
 
         self._buildStatusItem()
         self.checkQuietly()
+        early, self._early_files = getattr(self, "_early_files", []), []
 
-        self.hotkey = HotKey(self.hotkeyPressed)
+        self.hotkey = HotKey(self.hotkeyPressed, 1)
+        self.loc_hotkey = HotKey(self.saveFinderLocation, 2)
         if not self.applyHotkey():
             self._hotkeyFailed()
 
@@ -5767,6 +6624,8 @@ class StacheApp(NSObject):
             POLL_SECONDS, self, "pollPasteboard:", None, True)
         NSRunLoop.currentRunLoop().addTimer_forMode_(
             self.timer, NSRunLoopCommonModes)
+        if early:
+            self.takeFiles(early)
 
     def _adoptOwnIcon(self):
         icon = own_icon()
@@ -5920,6 +6779,9 @@ class StacheApp(NSObject):
             "Open Stache", "menuOpen:", "")
         self.open_item.setTarget_(self)
         menu.addItem_(NSMenuItem.separatorItem())
+        self.loc_item = menu.addItemWithTitle_action_keyEquivalent_(
+            "Save Finder Location…", "menuSaveLocation:", "")
+        self.loc_item.setTarget_(self)
         self.pause_item = menu.addItemWithTitle_action_keyEquivalent_(
             "Pause Capturing", "menuPause:", "")
         self.pause_item.setTarget_(self)
@@ -5958,6 +6820,9 @@ class StacheApp(NSObject):
         self.open_item.setTitle_(
             "Open Stache    %s"
             % hotkey_label(pref(DEF_HOTKEY_CODE), pref(DEF_HOTKEY_MODS)))
+        self.loc_item.setTitle_(
+            "Save Finder Location…    %s"
+            % hotkey_label(pref(DEF_LOC_CODE), pref(DEF_LOC_MODS)))
         self.pause_item.setTitle_(
             "Resume Capturing" if self.paused else "Pause Capturing")
 
@@ -5965,6 +6830,9 @@ class StacheApp(NSObject):
 
     def applyHotkey(self):
         ok = self.hotkey.register(pref(DEF_HOTKEY_CODE), pref(DEF_HOTKEY_MODS))
+        # The location chord failing is not worth an alert at launch; the
+        # menu item still does the job.
+        self.loc_hotkey.register(pref(DEF_LOC_CODE), pref(DEF_LOC_MODS))
         self.refreshMenu()
         return ok
 
@@ -6052,6 +6920,94 @@ class StacheApp(NSObject):
         pb.setString_forType_(text, NSPasteboardTypeString)
         self.last_change = int(pb.changeCount())
 
+    # -- Open With --------------------------------------------------------
+
+    def application_openFiles_(self, app, filenames):
+        """Finder's Open With, or a file dropped on the app.  This can arrive
+        before applicationDidFinishLaunching_ has built the store (the open
+        is what launched us), so early files wait in a list."""
+        files = [str(f) for f in filenames]
+        if getattr(self, "store", None) is None:
+            self._early_files = getattr(self, "_early_files", []) + files
+        else:
+            self.takeFiles(files)
+        app.replyToOpenOrPrint_(0)
+
+    @objc.python_method
+    def takeFiles(self, files):
+        last = None
+        skipped = []
+        for path in files:
+            found = read_opened_file(path)
+            if found is None:
+                skipped.append(os.path.basename(path))
+                continue
+            if found[0] == "image":
+                self.store.add_image(found[1], found[2], found[3],
+                                     "Open With", None)
+            else:
+                self.store.add_text(found[1], "Open With")
+            last = found
+        if last is not None:
+            self.putOnPasteboard(last)
+            self._afterCapture()
+        if skipped:
+            NSApp.activateIgnoringOtherApps_(True)
+            _alert("Stache could not use %s" % (
+                       skipped[0] if len(skipped) == 1
+                       else "%d of those files" % len(skipped)),
+                   "Stache keeps images and text. An empty file, a binary "
+                   "file or one over 5 MB is left alone.")
+
+    @objc.python_method
+    def putOnPasteboard(self, found):
+        pb = NSPasteboard.generalPasteboard()
+        if found[0] == "image":
+            data = NSData.dataWithBytes_length_(found[1], len(found[1]))
+            rep = NSBitmapImageRep.imageRepWithData_(data)
+            tiff = rep.TIFFRepresentation() if rep is not None else None
+            pb.declareTypes_owner_(
+                [NSPasteboardTypePNG] + ([NSPasteboardTypeTIFF] if tiff else []),
+                None)
+            pb.setData_forType_(data, NSPasteboardTypePNG)
+            if tiff:
+                pb.setData_forType_(tiff, NSPasteboardTypeTIFF)
+        else:
+            pb.declareTypes_owner_([NSPasteboardTypeString], None)
+            pb.setString_forType_(found[1], NSPasteboardTypeString)
+        # Already recorded by takeFiles; the poll must not record it twice.
+        self.last_change = int(pb.changeCount())
+
+    # -- Save Finder location ---------------------------------------------
+
+    def menuSaveLocation_(self, sender):
+        self.saveFinderLocation()
+
+    def saveFinderLocation(self):
+        """The location hotkey: front Finder window -> a name -> go's file."""
+        path, problem = front_finder_folder()
+        NSApp.activateIgnoringOtherApps_(True)
+        if self.picker is not None:
+            self.picker.holdOpen()
+        try:
+            if path is None:
+                _alert("Could not save the location", problem)
+                return
+            name = suggest_go_name(path)
+            while True:
+                name = _ask_name(path, name)
+                if name is None:
+                    return
+                try:
+                    add_go_location(name, path)
+                except GoLocationError as exc:
+                    _alert("Not saved", str(exc))
+                    continue
+                return
+        finally:
+            if self.picker is not None:
+                self.picker.releaseHold()
+
     # -- menu actions -----------------------------------------------------
 
     def rebuildPicker(self):
@@ -6087,6 +7043,9 @@ class StacheApp(NSObject):
         if was_visible:
             self.picker.reopenAfterRebuild_kind_(query, kind)
 
+    def rebuildAfterDrag_(self, _):
+        self.rebuildPicker()
+
     def menuOpen_(self, sender):
         self.picker.show()
 
@@ -6104,6 +7063,11 @@ class StacheApp(NSObject):
         if self.picker is not None:
             self.picker.holdOpen()
         self.prefs.show()
+        # Bring the picker up behind the panel when it is not on screen, so
+        # layout, size and colour changes can be watched as they are made.
+        # Ordered front without taking key: Preferences keeps the focus.
+        if self.picker is not None and not self.picker.panel.isVisible():
+            self.picker.reopenAfterRebuild_kind_("", 0)
 
     def showHelp(self):
         if self.picker is not None:

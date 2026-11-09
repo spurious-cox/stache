@@ -7,7 +7,7 @@
 	       allow-unsigned-executable-memory  CPython writes executable pages
 	       allow-jit                         same, for the JIT-ish paths
 	       disable-library-validation        load .so files from the bundle
-	     Stache needs nothing beyond these.  Its global hotkey is a Carbon hot
+	     Apple events (below) are for the Save Finder location hotkey.  Its global hotkey is a Carbon hot
 	     key, which the window server grants without any entitlement or TCC
 	     permission, and writing to the pasteboard is unprivileged. -->
 	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
@@ -15,6 +15,9 @@
 	<key>com.apple.security.cs.allow-jit</key>
 	<true/>
 	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+	<!-- Save Finder location: asks Finder for its front window. -->
+	<key>com.apple.security.automation.apple-events</key>
 	<true/>
 </dict>
 </plist>

@@ -22,6 +22,14 @@ The name is the joke: a *stache* is where you *stash* things.
 
 ## New in 2
 
+* **Drag a clipping to a new place** (2.27). Press on a card and move: it lifts and follows the pointer, and a blue bar shows where it will land. Pause and the other cards slide apart to leave a space, as the Dock does (2.28). Hold it at the end of the strip, column or grid and the list keeps scrolling under it until you let go. The new place is kept; copying something new still goes to the front, and recalling, pinning, hiding or editing a clipping brings it forward again. A click now picks on release, so a press that becomes a drag moves the card instead.
+* **A background colour of your choice** (2.24–2.28). Preferences has a 3 × 3 block of colours (black, white, grey, red, orange, yellow, green, blue), a red ✕ in the middle for a fully transparent picker, a System color button, and a *Shade* slider from darker to lighter. The slider starts at zero each time Preferences opens and the shade you chose is kept as the colour itself.
+* **Preferences shows its changes as you make them** (2.25–2.26). Layout, card size, strip width, background and shade apply immediately to the picker behind the panel, which Preferences now brings up if it is closed; Cancel puts everything back.
+* **The grid opens at the top** and is no taller than its rows need (2.27).
+* **Drag the strip taller or the column wider** (2.23). The strip's height and the column's width follow the mouse, up to the screen's edges, and the cards grow or shrink with them. The size is kept per Mac; ⌘0 or choosing a card size in Preferences goes back to the preset.
+* **Open With and Save Finder location** (2.22). Stache now appears in
+  Finder's Open With list for images and text, and a second hotkey (⌃⌥⌘L)
+  saves the front Finder window's folder into `~/.go_locations` for `go`.
 * **Reading order** (2.13). Tick Show oldest first and the latest clipping is
   on the right instead of the left, and recalled clippings stop jumping to
   the front.
@@ -189,7 +197,11 @@ Unlock falls back to your login password, so a Mac without Touch ID works too.
 
 ## Preferences
 
-From the menu bar item, or ⌘, while Stache is frontmost.
+From the menu bar item, or ⌘, while Stache is frontmost. Layout, card size,
+strip size and the background apply as you choose them; Save keeps them and
+Cancel puts them back.
+
+![the Preferences panel](docs/preferences.png)
 
 * **Card size** — Large (272 × 220), Medium (230 × 188), Small (190 × 158) or
   Custom: type your own width (120–400) and height (80–400) in points. Each
@@ -200,6 +212,11 @@ From the menu bar item, or ⌘, while Stache is frontmost.
 * **Strip size** — a percentage of the screen: a strip's width, a column's
   height.
 * **Hotkey** — click the button and press the chord. At least one modifier.
+* **Save location** — the chord for saving a Finder location (below); same rules, and it must differ from the Hotkey.
+* **Background** — a 3 × 3 block of colours; the red ✕ in the middle makes the
+  picker transparent, and **System color** goes back to the default. **Shade**
+  lightens or darkens the chosen colour, from zero each time you open
+  Preferences.
 * **Keep at most** *n* items (0 = no limit).
 * **Delete after** *n* days (0 = never), counted from the last time you used
   a clipping. A card in the last tenth of its life says so in red.
@@ -255,10 +272,40 @@ at launch.
 Copying the same thing twice moves the existing entry back to the top rather
 than making a second one.
 
+## Open With
+
+Stache is in Finder's **Open With** list for **images and text files only**,
+never as anyone's default. Opening a file with it adds the file to the history
+and puts it on the clipboard — the image itself for an image, the text for a
+text file — ready to paste. Files that are empty, binary or over 5 MB are left
+alone.
+
+## Save Finder location (2.22.0)
+
+Press **⌃⌥⌘L** with a Finder window in front (or choose *Save Finder
+Location…* from the menu bar item). Stache reads that window's folder, asks for
+a short name, and appends a line to `~/.go_locations` in goclaude's format:
+`name 'path' yymmdd.hhmmss d`. That is the one file read by both the `go` tool
+in Terminal and the gobrowser.app window, so the folder is a `go name` away in
+either. A name already in the file (parked `#names` included) is refused; the
+other lines are never rewritten, and the file is replaced atomically.
+
+* **Change the chord:** Preferences → *Save location*, click the button and
+  press a chord (at least one modifier, and different from the main Hotkey).
+* **Needs Automation permission:** the first time, macOS asks whether Stache
+  may control Finder. Allow it; it can be changed later in System Settings →
+  Privacy & Security → Automation.
+* **If denied:** nothing is saved, and Stache says it is not allowed to control
+  Finder and where to turn that on. The hotkey and everything else in Stache
+  keep working.
+* With no Finder window open, nothing is saved and Stache says so.
+
 ## Permissions
 
-None. The hotkey is a Carbon hot key, and writing to the pasteboard is
-unprivileged. That is why picking a clipping copies rather than pressing ⌘V
+The hotkeys are Carbon hot keys, and writing to the pasteboard is
+unprivileged. The one exception is Save Finder location, which asks Finder for
+its front window: macOS asks once whether Stache may control Finder (System
+Settings → Privacy & Security → Automation). That is why picking a clipping copies rather than pressing ⌘V
 for you — synthesising a keystroke would have required Accessibility.
 
 ## Updates

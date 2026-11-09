@@ -147,6 +147,211 @@ def test_hotkey_labels():
           hasattr(stache._carbon, "RegisterEventHotKey"))
 
 
+def test_go_locations():
+    print("go locations")
+    from datetime import datetime
+    store = os.path.join(SCRATCH, "go_locations")
+    seed = ("abin         '/Users/x/bin/abin'                                          260112.135324 d\n"
+            "#autopay     '/Users/x/Desktop/autopay'                                   260116.142119 f\n")
+    with open(store, "w") as fh:
+        fh.write(seed)
+    when = datetime(2026, 11, 8, 14, 5, 9)
+    stache.add_go_location("Pix", "/Users/x/Pictures", when, store)
+    with open(store) as fh:
+        text = fh.read()
+    check("the other lines are untouched", text.startswith(seed))
+    new = text[len(seed):]
+    check("the new line has go's columns",
+          new == "%-12s %s%s 261108.140509 d\n" % (
+              "Pix", "'/Users/x/Pictures'", " " * (60 - 19)), repr(new))
+    check("go's own parser reads it back",
+          new.split()[0] == "Pix" and new.split("'")[1] == "/Users/x/Pictures"
+          and new.split("'")[2].split() == ["261108.140509", "d"])
+    for label, name in (("a name already there", "abin"),
+                        ("the same name in other case", "ABIN"),
+                        ("a parked (#) name", "autopay"),
+                        ("an empty name", "  "),
+                        ("a name with a space", "two words"),
+                        ("a name starting #", "#x")):
+        try:
+            stache.add_go_location(name, "/tmp", when, store)
+            ok = False
+        except stache.GoLocationError:
+            ok = True
+        check("refuses " + label, ok)
+    try:
+        stache.add_go_location("apos", "/Users/x/Tim's", when, store)
+        ok = False
+    except stache.GoLocationError:
+        ok = True
+    check("refuses a path with an apostrophe", ok)
+    with open(store) as fh:
+        check("refusals wrote nothing", fh.read() == text)
+    long_path = "/Users/x/" + "d" * 70
+    stache.add_go_location("long", long_path, when, store)
+    with open(store) as fh:
+        last = fh.read().splitlines()[-1]
+    check("a path wider than the column is padded as go pads it (1 + 1)",
+          last.endswith("'%s'  261108.140509 d" % long_path), last)
+    check("no temp file left behind",
+          not [n for n in os.listdir(SCRATCH) if n.startswith(".go_locations")])
+    check("name suggestion", stache.suggest_go_name("/Users/x/My Docs/") == "mydocs")
+    check("location chord defaults apart from the picker's",
+          (stache.pref(stache.DEF_LOC_CODE), stache.pref(stache.DEF_LOC_MODS))
+          != (stache.pref(stache.DEF_HOTKEY_CODE),
+              stache.pref(stache.DEF_HOTKEY_MODS)))
+    check("and reads as Control-Option-Command-L",
+          stache.hotkey_label(stache.DEFAULT_LOC_CODE,
+                              stache.DEFAULT_LOC_MODS) == "⌃⌥⌘L")
+
+
+def test_open_with():
+    print("open with")
+    d = os.path.join(SCRATCH, "openwith")
+    os.makedirs(d, exist_ok=True)
+    txt = os.path.join(d, "note.txt")
+    with open(txt, "w") as fh:
+        fh.write("hello from a file\n")
+    png = os.path.join(d, "pic.png")
+    with open(png, "wb") as fh:
+        fh.write(sample_png(30, 20, (200, 10, 10)))
+    junk = os.path.join(d, "junk.bin")
+    with open(junk, "wb") as fh:
+        fh.write(b"\x00\x01\x02\xff\xfe" * 50)
+    empty = os.path.join(d, "empty.txt")
+    open(empty, "w").close()
+    t = stache.read_opened_file(txt)
+    check("a text file reads as text", t == ("text", "hello from a file\n"), str(t))
+    i = stache.read_opened_file(png)
+    check("an image reads as a PNG with its size",
+          i is not None and i[0] == "image" and i[2:] == (30, 20)
+          and i[1][:4] == b"\x89PNG", str(i and i[0]))
+    check("binary junk is refused", stache.read_opened_file(junk) is None)
+    check("an empty file is refused", stache.read_opened_file(empty) is None)
+    check("a missing file is refused",
+          stache.read_opened_file(os.path.join(d, "nope")) is None)
+    import plistlib
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "setup.py")) as fh:
+        src = fh.read()
+    check("setup.py declares image and text types at Alternate rank",
+          all(k in src for k in ("public.image", "public.plain-text",
+                                 "public.text", '"Alternate"', '"Viewer"',
+                                 "NSAppleEventsUsageDescription")))
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "stache.entitlements"), "rb") as fh:
+        ent = plistlib.load(fh)
+    check("the Apple Events entitlement is present",
+          ent.get("com.apple.security.automation.apple-events") is True)
+
+
+def test_move_item():
+    print("dragging a clipping to a new place")
+    import tempfile
+    store = stache.Store(os.path.join(tempfile.mkdtemp(), "m.sqlite3"))
+    saved = stache.pref(stache.DEF_OLDEST_FIRST)
+    try:
+        for word in ("one", "two", "three", "four"):
+            store.add_text(word)
+        stache.set_pref(stache.DEF_OLDEST_FIRST, False)
+        ids = [i.id for i in store.items()]            # four three two one
+        # four to between two and one
+        store.move_item(ids[0], ids[2], ids[3], False)
+        got = [i.body for i in store.items()]
+        check("moved between its new neighbours",
+              got == ["three", "two", "four", "one"], str(got))
+        store.move_item(ids[0], None, ids[1], False)   # back to the top
+        got = [i.body for i in store.items()]
+        check("and to either end",
+              got == ["four", "three", "two", "one"], str(got))
+        store.move_item(ids[0], ids[3], None, False)   # to the bottom
+        check("the bottom", store.items()[-1].body == "four")
+        stache.set_pref(stache.DEF_OLDEST_FIRST, True)
+        got = [i.body for i in store.items()]
+        check("a moved clipping keeps its place in reading order too",
+              got == ["four", "one", "two", "three"], str(got))
+        store.pin(ids[1], True) if hasattr(store, "pin") else None
+    finally:
+        stache.set_pref(stache.DEF_OLDEST_FIRST, saved)
+
+
+def test_background_color():
+    print("background colour")
+    saved = stache.pref(stache.DEF_BG)
+    saved_shade = stache.pref(stache.DEF_BG_SHADE)
+    try:
+        stache.set_pref(stache.DEF_BG, "")
+        check("unset uses the system colour",
+              stache.bg_color().isEqual_(stache.NSColor.windowBackgroundColor())
+              and not stache.bg_is_clear())
+        stache.set_pref(stache.DEF_BG, "blue")
+        c = stache.bg_color()
+        check("a basic colour is used", abs(c.blueComponent() - 0.85) < 0.01)
+        stache.set_pref(stache.DEF_BG, "none")
+        check("none is transparent",
+              stache.bg_is_clear() and stache.bg_color().alphaComponent() == 0)
+        stache.set_pref(stache.DEF_BG, "junk")
+        check("junk falls back to the system colour",
+              stache.bg_color().isEqual_(stache.NSColor.windowBackgroundColor()))
+        check("eight basic colours", len(stache.BG_COLORS) == 8)
+        stache.set_pref(stache.DEF_BG, "gray")
+        stache.set_pref(stache.DEF_BG_SHADE, -100)
+        dark = stache.bg_color().redComponent()
+        stache.set_pref(stache.DEF_BG_SHADE, 100)
+        light = stache.bg_color().redComponent()
+        check("the shade slider darkens and lightens",
+              dark < 0.01 and light > 0.99, "%s %s" % (dark, light))
+    finally:
+        stache.set_pref(stache.DEF_BG, saved)
+        stache.set_pref(stache.DEF_BG_SHADE, saved_shade)
+
+
+def test_strip_height_column_width():
+    print("strip height and column width")
+    saved = {k: stache.pref(k) for k in (stache.DEF_LAYOUT, stache.DEF_STRIP_H,
+                                         stache.DEF_COLUMN_W,
+                                         stache.DEF_CARD_SIZE)}
+    try:
+        stache.set_pref(stache.DEF_CARD_SIZE, "small")
+        stache.set_pref(stache.DEF_LAYOUT, "strip")
+        stache.set_pref(stache.DEF_STRIP_H, 0)
+        stache.set_pref(stache.DEF_COLUMN_W, 0)
+        stache.apply_card_size()
+        check("0 leaves the card size in charge",
+              (stache.CARD_W, stache.CARD_H) == (190, 158))
+        lo, hi = stache.strip_height_range()
+        stache.set_pref(stache.DEF_STRIP_H, lo + 100)
+        stache.apply_card_size()
+        check("a strip height sets the card height",
+              stache.CARD_H == 180 and stache.STRIP_H == lo + 100,
+              "%s %s" % (stache.CARD_H, stache.STRIP_H))
+        check("and keeps the card's proportions",
+              abs(stache.CARD_W / float(stache.CARD_H) - 190 / 158.0) < 0.02)
+        stache.set_pref(stache.DEF_STRIP_H, 5)
+        stache.apply_card_size()
+        check("a silly small height is clamped to a card that can be read",
+              stache.CARD_H == stache.CUSTOM_H_RANGE[0])
+        stache.set_pref(stache.DEF_LAYOUT, "column")
+        stache.set_pref(stache.DEF_COLUMN_W, 0)
+        stache.apply_card_size()
+        check("the strip height is ignored in the column",
+              (stache.CARD_W, stache.CARD_H) == (190, 158))
+        lo, hi = stache.column_width_range()
+        stache.set_pref(stache.DEF_COLUMN_W, lo + 40)
+        stache.apply_card_size()
+        check("a column width sets the card width",
+              stache.CARD_W == 160
+              and stache.COLUMN_CONTENT_W == lo + 40, str(stache.CARD_W))
+        stache.set_pref(stache.DEF_LAYOUT, "grid")
+        stache.apply_card_size()
+        check("the grid ignores both",
+              (stache.CARD_W, stache.CARD_H) == (190, 158))
+    finally:
+        for k, v in saved.items():
+            stache.set_pref(k, v)
+        stache.apply_card_size()
+
+
 def test_menu():
     print("menu titles")   # used by alerts now, not by the menu bar
     store = stache.Store(stache.DB_PATH)
@@ -248,7 +453,9 @@ def test_prefs_layout():
     check("every control is inside the panel", not strays, "; ".join(strays))
 
     controls = [("card size", prefs.card_menu), ("layout", prefs.layout_menu),
-                ("strip width", prefs.strip_pct), ("hotkey", prefs.hotkey_button),
+                ("strip width", prefs.strip_pct),
+                ("hotkey", prefs.hotkey_button),
+                ("save location hotkey", prefs.loc_button),
                 ("max items", prefs.max_items), ("max days", prefs.max_days),
                 ("capture images", prefs.capture_images),
                 ("oldest first", prefs.oldest_first),
@@ -1041,7 +1248,10 @@ def test_custom_card():
               stache.card_dims("custom") == (200, 120)
               and (stache.CARD_W, stache.CARD_H) == (200, 120),
               str((stache.CARD_W, stache.CARD_H)))
-        check("and rebuilds the picker", App.rebuilt == 1, str(App.rebuilt))
+        # Display settings apply as they are chosen, so the picker has
+        # been rebuilt along the way; Save does not rebuild it again.
+        check("and the picker was rebuilt to show it", App.rebuilt >= 1,
+              str(App.rebuilt))
     finally:
         for key in (stache.DEF_CUSTOM_W, stache.DEF_CUSTOM_H,
                     stache.DEF_CARD_SIZE):
@@ -1573,6 +1783,11 @@ if __name__ == "__main__":
     try:
         test_store()
         test_hotkey_labels()
+        test_go_locations()
+        test_open_with()
+        test_strip_height_column_width()
+        test_background_color()
+        test_move_item()
         test_menu()
         test_capture_vs_use()
         test_expiry()

@@ -56,6 +56,19 @@ OPTIONS = {
         "CFBundleVersion": VERSION,
         "LSMinimumSystemVersion": "13.0",
         "NSHighResolutionCapable": True,
+        # Finder's Open With list: images and text, as a Viewer at the lowest
+        # rank so Stache is offered but never becomes anyone's default.
+        "CFBundleDocumentTypes": [{
+            "CFBundleTypeName": "Image or text file",
+            "CFBundleTypeRole": "Viewer",
+            "LSHandlerRank": "Alternate",
+            "LSItemContentTypes": ["public.image", "public.plain-text",
+                                   "public.text"],
+        }],
+        # The Save Finder location hotkey asks Finder for its front window.
+        "NSAppleEventsUsageDescription":
+            "Stache reads the folder of your front Finder window so it can "
+            "save it as a location for go.",
         # Accessory app: no Dock icon, no menu bar.
         "LSUIElement": True,
         "NSHumanReadableCopyright":
