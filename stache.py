@@ -5256,7 +5256,7 @@ HELP_SECTIONS = (
         ("Save location", "a second hotkey, ⌃⌥⌘L by default (change it "
                           "in Preferences → Save location), saves the front "
                           "Finder window's folder under a name you give it, "
-                          "as a line in ~/.go_locations in go.claude's format. "
+                          "as a line in ~/.go_locations in goclaude's format. "
                           "The `go` tool in Terminal and GoBrowser.app read "
                           "that same file. A name already there is refused"),
         ("Automation", "the first time, macOS asks to let Stache control "
@@ -6482,7 +6482,7 @@ def read_opened_file(path):
 # ~/.go_locations is shared with the `go` shell tool and its browser, so the
 # file is theirs and Stache is a guest: it only ever appends one line, in
 # their format, and replaces the file whole (atomically) so a crash cannot
-# leave it half-written.  Format, from go.claude's write_locations: the name
+# leave it half-written.  Format, from goclaude's write_locations: the name
 # padded to 12, a space, 'path' padded to 60, a space, yymmdd.hhmmss, a space,
 # and a type letter (d for a folder).
 
