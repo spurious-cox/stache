@@ -6166,6 +6166,22 @@ def adapt_titlebar(window):
         controller.setHidden_(width < (380 if left else 560))
 
 
+_STATUS_MENU = []     # the menu bar menu, once built; the title bar reuses it
+
+
+class TitleMenuView(NSView):
+    """The name and icon in the title bar. Clicking it opens the same menu
+    as the menu bar item: About, Preferences, Help, Updates, Pause, Quit."""
+
+    def acceptsFirstMouse_(self, event):
+        return True
+
+    def mouseDown_(self, event):
+        if _STATUS_MENU:
+            NSMenu.popUpContextMenu_withEvent_forView_(
+                _STATUS_MENU[0], event, self)
+
+
 def decorate_titlebar(window, compact=False):
     """Version on the left, name then icon in the centre, copyright right.
 
@@ -6208,8 +6224,9 @@ def decorate_titlebar(window, compact=False):
     name.sizeToFit()
     icon = own_icon()
     icon_w = 16 if icon is not None else 0
-    piece = NSView.alloc().initWithFrame_(
+    piece = TitleMenuView.alloc().initWithFrame_(
         NSMakeRect(0, 0, name.frame().size.width + icon_w + 6, 20))
+    piece.setToolTip_("Stache menu: Preferences, Help, Updates, Pause, Quit")
     name.setFrameOrigin_(NSMakePoint(0, 2))
     piece.addSubview_(name)
     if icon is not None:
@@ -6790,6 +6807,8 @@ class StacheApp(NSObject):
             "Quit Stache", "menuQuit:", "q")
         quit_item.setTarget_(self)
         self.status_item.setMenu_(menu)
+        del _STATUS_MENU[:]
+        _STATUS_MENU.append(menu)
         self.refreshMenu()
 
     # -- the menu bar menu ------------------------------------------------
