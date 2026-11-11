@@ -510,7 +510,7 @@ History:
   1.0.0  First release.
 """
 
-APP_VERSION = "2.28.1"
+APP_VERSION = "2.28.2"
 COPYRIGHT = "© 2026 Tim McCoy"
 APP_NAME = "Stache"
 BUNDLE_ID = "com.timmccoy.stache"
