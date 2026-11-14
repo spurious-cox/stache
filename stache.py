@@ -510,7 +510,7 @@ History:
   1.0.0  First release.
 """
 
-APP_VERSION = "2.28.3"
+APP_VERSION = "2.28.4"
 COPYRIGHT = "© 2026 Tim McCoy"
 APP_NAME = "Stache"
 BUNDLE_ID = "com.timmccoy.stache"
@@ -567,6 +567,7 @@ from AppKit import (
     NSImageView,
     NSLineBreakByTruncatingTail,
     NSMakeRect,
+    NSPointInRect,
     NSMakeSize,
     NSMenu,
     NSMenuItem,
@@ -6172,6 +6173,12 @@ _STATUS_MENU = []     # the menu bar menu, once built; the title bar reuses it
 class TitleMenuView(NSView):
     """The name and icon in the title bar. Clicking it opens the same menu
     as the menu bar item: About, Preferences, Help, Updates, Pause, Quit."""
+
+    def hitTest_(self, point):
+        # The whole piece is the target, text included. Without this the
+        # name's own text field took the click and nothing opened.
+        local = self.convertPoint_fromView_(point, self.superview())
+        return self if NSPointInRect(local, self.bounds()) else None
 
     def acceptsFirstMouse_(self, event):
         return True
